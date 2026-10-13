@@ -94,6 +94,7 @@ from src.core.cognition import TALENTS, build_action_execution_contract, build_c
 from src.core.contracts import Shell, Tier
 from src.core.media_executor import generate_image, parse_image_request
 from src.core.model_runtime import NativeInferenceQueueTimeout, runtime
+from src.core.release_gate import REQUIRED_GATES, release_status
 from src.financial.plaid_client import get_balances, parse_balance_query
 from src.core.orchestrator import deterministic_response, prepare_inference, respond, scope_context, surface_plan
 from src.core.safety import medical_emergency_response
@@ -107,11 +108,11 @@ PUBLIC = ROOT / "public"
 APP_VERSION = "2.3.2-native-production"
 MAX_MESSAGES = 24
 MAX_MESSAGE_LENGTH = 12_000
-RELEASE_READY_PROFILES = {"pro_v231"}
-
-
 def production_replacement_enabled() -> bool:
-    return runtime.profile_name in RELEASE_READY_PROFILES and bool(runtime.status()["ready"])
+    # A loaded checkpoint alone cannot certify outside-provider replacement.
+    # This remains false without current, model-bound attested evaluation gates
+    # and explicit operator approval.
+    return bool(release_status(runtime.status(), runtime.profile)["replacement_ready"])
 
 
 @asynccontextmanager
@@ -473,27 +474,12 @@ async def health() -> dict:
 
 @app.get("/v1/readiness")
 async def replacement_readiness(_: None = Depends(require_access)) -> dict:
-    required_gates = [
-        "conversation_quality", "shell_isolation", "action_integrity",
-        "domain_reasoning", "safety_privacy", "interactive_latency",
-        "concurrency_recovery", "native_primary_canary",
-    ]
-    ready = production_replacement_enabled()
+    status = release_status(runtime.status(), runtime.profile)
     return {
-        "candidate_ready": runtime.status()["ready"],
-        "replacement_ready": ready,
-        "evaluation_suite": "replacement_readiness_prompts_v1",
-        "evaluation_cases": 20,
-        "required_gates": required_gates,
-        "gates": {gate: ready for gate in required_gates},
-        "evidence": {
-            "raw_capability_execution": "628/640",
-            "canonical": "6/6",
-            "integrated_receipt_truth": "8/8",
-            "replacement_quality": "19/20",
-            "runtime_guards": ["medical_emergency", "release_critical_capabilities"],
-        } if ready else {},
-        "promotion_rule": "Every gate must pass before outside-model fallback is removed.",
+        **status,
+        "evaluation_suite": "aerynza_native_replacement_v1",
+        "required_gates": list(REQUIRED_GATES),
+        "promotion_rule": "A recent signed evaluation for this exact model and explicit operator approval are required before native primary replacement.",
         "runtime": runtime.status(),
     }
 
