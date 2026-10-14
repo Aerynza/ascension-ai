@@ -10,6 +10,7 @@ on:
       - 'tests/test_v253_training_packages.py'
       - '.github/workflows/v253-training-preflight.yml'
       - 'public/capability_report.json'
+      - 'evals/capability_status.json'
   push:
     branches:
       - 'codex/aerynza-v253-self-reliance-packs'
@@ -46,5 +47,9 @@ jobs:
             --max-length 1024 --learning-rate 2e-6 --epochs 1.0 --validate-only
       - name: Regenerate 640-ID evidence queue (never treated as execution proof)
         run: python3 scripts/build_v251_capability_validation_queue.py
+      - name: Separate 640 historical capability claims from actual execution evidence
+        run: |
+          python3 scripts/build_v253_640_execution_map.py
+          python3 -m unittest discover -s tests -p 'test_v253_640_execution_map.py' -v
       - name: Shell syntax only; do not launch GPU
         run: bash -n scripts/launch_v253_self_reliance.sh
