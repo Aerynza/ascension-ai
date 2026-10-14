@@ -57,6 +57,41 @@ def auth_headers(body, key, *, nonce="nonce-1", shell="ap", method="POST", path=
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("declared_length", [None, "1048577"])
+async def test_oversized_body_stops_reading_before_remaining_chunks(signing, declared_length):
+    consumed = []
+
+    async def chunks():
+        for index in range(4):
+            consumed.append(index)
+            yield b"x" * 600_000
+
+    headers = {"Authorization": "Bearer test-service-token"}
+    if declared_length is not None:
+        headers["Content-Length"] = declared_length
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=api.app), base_url="http://test") as client:
+        response = await client.post("/v1/memory/candidates", content=chunks(), headers=headers)
+    assert response.status_code == 413
+    assert consumed == ([] if declared_length else [0, 1])
+
+
+@pytest.mark.asyncio
+async def test_small_chunked_signed_body_reaches_handler(signing):
+    body = {"text": "Remember my preference"}
+    encoded = json.dumps(body).encode()
+
+    async def chunks():
+        yield encoded[:8]
+        yield encoded[8:]
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=api.app), base_url="http://test") as client:
+        response = await client.post("/v1/memory/candidates", content=chunks(), headers={
+            **auth_headers(body, signing, nonce="chunked-body"), "Content-Type": "application/json",
+        })
+    assert response.status_code == 200, response.text
+
+
+@pytest.mark.asyncio
 async def test_unsigned_production_post_rejected(signing):
     transport = httpx.ASGITransport(app=api.app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:

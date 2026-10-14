@@ -108,6 +108,7 @@ PUBLIC = ROOT / "public"
 APP_VERSION = "2.3.2-native-production"
 MAX_MESSAGES = 24
 MAX_MESSAGE_LENGTH = 12_000
+MAX_SIGNED_BODY_BYTES = 1_048_576
 def production_replacement_enabled() -> bool:
     # A loaded checkpoint alone cannot certify outside-provider replacement.
     # This remains false without current, model-bound attested evaluation gates
@@ -156,9 +157,24 @@ async def signed_request_boundary(request, call_next):
     if not _authorized_token(request.headers.get("authorization")):
         return JSONResponse(status_code=401, content={"detail": "Authentication required"})
     try:
-        body_bytes = await request.body()
-        if len(body_bytes) > 1_048_576:
+        declared_length = request.headers.get("content-length")
+        if declared_length is not None and (not declared_length.isascii() or not declared_length.isdigit()):
+            return JSONResponse(status_code=400, content={"detail": "Invalid content length"})
+        if declared_length is not None and int(declared_length) > MAX_SIGNED_BODY_BYTES:
             return JSONResponse(status_code=413, content={"detail": "Request too large"})
+        # Bound accumulation even when Content-Length is absent or understates
+        # a chunked body. Do not drain an oversized stream before rejecting it.
+        chunks = []
+        size = 0
+        async for chunk in request.stream():
+            size += len(chunk)
+            if size > MAX_SIGNED_BODY_BYTES:
+                return JSONResponse(status_code=413, content={"detail": "Request too large"})
+            chunks.append(chunk)
+        body_bytes = b"".join(chunks)
+        # Starlette's cached middleware request replays this bounded body to
+        # downstream JSON validation after signature verification.
+        request._body = body_bytes
         payload = {} if protected_get and not body_bytes else json.loads(body_bytes)
         if not isinstance(payload, dict):
             raise InvalidEnvelope("Expected JSON object body")
