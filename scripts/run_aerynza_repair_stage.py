@@ -57,8 +57,12 @@ def verify_stage(plan_path: Path, approval_path: Path, parent: Path,
         raise ValueError("new candidate must not overwrite parent")
     # Reuse trainer's existing validated schema, then reject direct overlap.
     # This cannot prove absence of semantic leakage; independent reviewer attests that.
-    rows, _ = load_curriculum(str(training.resolve()), minimum_records=20)
-    eval_rows, _ = load_curriculum(str(heldout.resolve()), minimum_records=8)
+    if not training.is_relative_to(ROOT) or not heldout.is_relative_to(ROOT):
+        raise ValueError("reviewed curricula must be inside this repository")
+    train_rel = training.relative_to(ROOT).as_posix()
+    heldout_rel = heldout.relative_to(ROOT).as_posix()
+    rows, _ = load_curriculum(train_rel, minimum_records=20)
+    eval_rows, _ = load_curriculum(heldout_rel, minimum_records=8)
     if {r["id"] for r in rows} & {r["id"] for r in eval_rows}:
         raise ValueError("training and held-out IDs overlap")
     if {str(r["user"]).strip().casefold() for r in rows} & {
@@ -78,8 +82,8 @@ def verify_stage(plan_path: Path, approval_path: Path, parent: Path,
         "--model", "Qwen/Qwen3-1.7B",
         "--model-revision", MODEL_REVISION_DEFAULT,
         "--resume-adapter", str(parent),
-        "--curriculum", str(training),
-        "--eval-curriculum", str(heldout),
+        "--curriculum", train_rel,
+        "--eval-curriculum", heldout_rel,
         "--output-dir", str(output),
         "--epochs", "1", "--learning-rate", "2e-6",
         "--max-length", "1024", "--save-steps", "2",
@@ -95,7 +99,8 @@ def execute(plan: dict, command: list[str], output: Path, training_budget_minute
     receipts = []
     reports_dir = ROOT / "evals" / "results"
     reports_dir.mkdir(parents=True, exist_ok=True)
-    label = "aerynza_repair_attempt_" + str(plan["attempt"] + 1)
+    label = ("aerynza_repair_attempt_" + str(plan["attempt"] + 1) + "_" +
+             hashlib.sha256(str(output).encode("utf-8")).hexdigest()[:12])
     def launch(label_part: str, args: list[str], minutes: int):
         try:
             code = subprocess.run(args, cwd=ROOT, timeout=minutes * 60, check=False).returncode
@@ -119,6 +124,9 @@ def execute(plan: dict, command: list[str], output: Path, training_budget_minute
     ]
     gate_paths = {}
     for name, script, report_path in evaluations:
+        if Path(report_path).exists():
+            return {"status": "stale_gate_report_exists", "stages": receipts,
+                    "not_promoted": True}
         gate_result = launch(name, [sys.executable, script, *args_common,
                                     "--output", report_path], gate_budget_minutes)
         receipts.append(gate_result)
@@ -145,6 +153,9 @@ def execute(plan: dict, command: list[str], output: Path, training_budget_minute
     for name in ("capability", "execution"):
         if name in gate_paths:
             optimizer_args += ["--" + name, gate_paths[name]]
+    if followup.exists():
+        return {"status": "stale_optimizer_report_exists", "stages": receipts,
+                "not_promoted": True}
     diagnosis = launch("diagnose", optimizer_args, 2)
     receipts.append(diagnosis)
     return {"status": "blocked_pending_independent_review",
