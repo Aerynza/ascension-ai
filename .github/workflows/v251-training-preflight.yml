@@ -8,7 +8,15 @@ on:
       - 'scripts/*v252*'
       - 'evals/training/aerynza_v252_execution_*'
       - 'tests/test_v252_training_packages.py'
+      - 'tests/test_aerynza_checkpoint_resume.py'
+      - 'scripts/aerynza_checkpoint_resume.py'
+      - 'scripts/train_qwen_ascension_lora.py'
+      - 'docs/training/AERYNZA_RESUMABLE_TRAINING.md'
       - 'tests/test_v251_training_packages.py'
+      - 'tests/test_aerynza_checkpoint_resume.py'
+      - 'scripts/aerynza_checkpoint_resume.py'
+      - 'scripts/train_qwen_ascension_lora.py'
+      - 'docs/training/AERYNZA_RESUMABLE_TRAINING.md'
       - '.github/workflows/v251-training-preflight.yml'
   push:
     branches:
@@ -52,5 +60,9 @@ jobs:
           python3 scripts/validate_v252_packages.py
           python3 -m unittest discover -s tests -p 'test_v252_training_packages.py' -v
           python3 scripts/train_qwen_ascension_lora.py --curriculum evals/training/aerynza_v252_execution_train.jsonl --output-dir checkpoints/v252_preflight_only --validate-only
+      - name: Verify checkpoint recovery rules (no GPU)
+        run: python3 -m unittest discover -s tests -p 'test_aerynza_checkpoint_resume.py' -v
+      - name: Check trainer syntax
+        run: python3 -m py_compile scripts/train_qwen_ascension_lora.py scripts/aerynza_checkpoint_resume.py
       - name: Shell syntax
         run: bash -n scripts/launch_v251_foundation.sh
