@@ -71,6 +71,32 @@ def main() -> int:
 
 
 def finish(stages: list[dict], status: str) -> int:
+    # Automatically diagnose rejected candidates using existing evidence only.
+    # Never fine-tune again, change thresholds, or deploy without a separate
+    # independently approved repair plan.
+    if status.startswith("rejected_by_"):
+        training_receipt = ROOT / ADAPTER / "ascension_training_receipt.json"
+        canonical_report = RESULTS / "aerynza_v20_canonical_gate.json"
+        executed = {stage["name"] for stage in stages}
+        if training_receipt.is_file() and canonical_report.is_file() and "canonical_gate" in executed:
+            optimizer_output = RESULTS / "aerynza_v20_failure_optimizer.json"
+            if not optimizer_output.exists():
+                command = [
+                    sys.executable, "scripts/aerynza_training_optimizer.py",
+                    "--training-receipt", str(training_receipt),
+                    "--canonical", str(canonical_report),
+                    "--output", str(optimizer_output),
+                ]
+                for stage_name, gate_name, filename in (
+                    ("capability_gate", "capability", "aerynza_v20_capability_gate.json"),
+                    ("execution_gate", "execution", "aerynza_v20_execution_gate.json"),
+                ):
+                    path = RESULTS / filename
+                    if stage_name in executed and path.is_file():
+                        command += ["--" + gate_name, str(path)]
+                stages.append(run("failure_optimizer", command))
+            else:
+                stages.append({"name": "failure_optimizer", "status": "existing_plan_preserved"})
     receipt = {
         "candidate": "aerynza_qwen3_1_7b_v20_candidate",
         "base_model": MODEL,
