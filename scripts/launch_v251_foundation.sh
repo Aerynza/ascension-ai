@@ -27,14 +27,24 @@ if [[ "${AERYNZA_V251_REVIEW_APPROVED:-}" != "YES" ]]; then
   echo "[v251] BLOCKED: written human approval of the examples is required" >&2
   exit 3
 fi
-if [[ -e "$OUTPUT" ]] && [[ -n "$(ls -A "$OUTPUT" 2>/dev/null)" ]]; then
-  echo "[v251] BLOCKED: output exists; refusing to overwrite checkpoints" >&2
+RESUME="${AERYNZA_V251_RESUME:-}"
+if [[ -e "$OUTPUT" ]] && [[ -n "$(ls -A "$OUTPUT" 2>/dev/null)" ]] && [[ -z "$RESUME" ]]; then
+  echo "[v251] BLOCKED: output exists. Set AERYNZA_V251_RESUME=auto to resume a verified checkpoint." >&2
   exit 4
+fi
+if [[ -n "$RESUME" ]]; then
+  RESUME_ARGS=(--resume-checkpoint "$RESUME")
+else
+  RESUME_ARGS=()
 fi
 if [[ -n "${AERYNZA_V251_PARENT_ADAPTER:-}" ]]; then
   if [[ ! -d "$AERYNZA_V251_PARENT_ADAPTER" || ! -f "$AERYNZA_V251_PARENT_ADAPTER/adapter_config.json" ]]; then
     echo "[v251] BLOCKED: selected parent adapter not present or invalid" >&2
     exit 5
+  fi
+  if [[ -n "$RESUME" ]]; then
+    echo "[v251] BLOCKED: resume adapter and resume checkpoint are different operations" >&2
+    exit 6
   fi
   PARENT=(--resume-adapter "$AERYNZA_V251_PARENT_ADAPTER")
 else
@@ -45,5 +55,5 @@ CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}" python3 -u scripts/train_qwen_
   --model "$MODEL" --model-revision "$REVISION" \
   --curriculum "$TRAIN" --eval-curriculum "$EVAL" \
   --output-dir "$OUTPUT" --epochs 1.0 --learning-rate 2e-6 \
-  --max-length 1024 "${PARENT[@]}"
+  --max-length 1024 --save-steps 2 "${RESUME_ARGS[@]}" "${PARENT[@]}"
 echo "[v251] Candidate completed; canonical, receipt, 640-category, execution, latency and human gates still required."
