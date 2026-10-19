@@ -17,9 +17,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from aerynza_checkpoint_resume import (
-    build_contract, prepare_run, select_checkpoint, write_checkpoint_manifest,
-)
+if __package__:
+    from .aerynza_checkpoint_resume import (
+        build_contract, prepare_run, select_checkpoint, write_checkpoint_manifest,
+    )
+else:
+    from aerynza_checkpoint_resume import (
+        build_contract, prepare_run, select_checkpoint, write_checkpoint_manifest,
+    )
 
 
 ROOT = Path(__file__).resolve().parents[1]
