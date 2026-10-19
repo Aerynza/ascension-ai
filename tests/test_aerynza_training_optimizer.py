@@ -47,6 +47,14 @@ class TrainingOptimizerTests(unittest.TestCase):
         self.assertFalse(out["automatic_promotion"])
         self.assertNotEqual(out["release_status"], "pass")
         self.assertEqual(out["gate_status"]["execution"], "pass")
+        self.assertEqual(out["optimizer_action"], "release_review_only_no_retraining")
+
+    def test_inconsistent_pass_aggregate_is_blocked(self):
+        inputs = fixtures()
+        inputs["canonical"]["canonical_results"][0]["semantic_pass"] = False
+        out = self.plan(inputs)
+        self.assertEqual(out["gate_status"]["canonical"], "fail")
+        self.assertEqual(out["optimizer_action"], "stop_for_independent_review")
 
     def test_failed_receipt_truth_requires_security_review(self):
         inputs = fixtures()
