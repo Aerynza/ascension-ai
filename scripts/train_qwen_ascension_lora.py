@@ -396,7 +396,8 @@ def main(argv: list[str] | None = None) -> int:
             "status": "trained_not_promoted",
             "base_model": args.model,
             "base_model_revision": args.model_revision,
-            "adapter_dir": output_dir.relative_to(ROOT).as_posix(),
+            "adapter_dir": (output_dir.relative_to(ROOT).as_posix()
+                            if output_dir.is_relative_to(ROOT) else str(output_dir)),
             "resumed_from_adapter": args.resume_adapter,
             "resumed_from_checkpoint": str(resume_checkpoint) if resume_checkpoint else None,
             "global_step": trainer.state.global_step,
