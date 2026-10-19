@@ -17,6 +17,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from aerynza_checkpoint_resume import (
+    build_contract, prepare_run, select_checkpoint, write_checkpoint_manifest,
+)
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SUPPORTED_SHELLS = {"ap", "lifeos", "sprout", "nexus_home", "nexus_family", "core", "creation"}
@@ -246,7 +250,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--curriculum", default="evals/training/aerynza_v20_balanced_master.jsonl")
     parser.add_argument("--eval-curriculum", default=None,
                         help="independent held-out JSONL pattern; never used for optimization")
-    parser.add_argument("--resume-adapter", default=None)
+    parser.add_argument("--resume-adapter", default=None,
+                        help="start a NEW stage from reviewed adapter weights; resets optimizer")
+    parser.add_argument("--resume-checkpoint", default=None,
+                        help="exactly resume a saved run: auto or checkpoint path inside output-dir")
+    parser.add_argument("--save-steps", type=int, default=2,
+                        help="persist full resumable state every N optimizer steps")
     parser.add_argument("--max-length", type=int, default=768)
     parser.add_argument("--epochs", type=float, default=4.0)
     parser.add_argument("--learning-rate", type=float, default=1.0e-4)
@@ -254,6 +263,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--validate-only", action="store_true")
     parser.add_argument("--allow-cpu", action="store_true", help="explicit override for diagnostic training only")
     args = parser.parse_args(argv)
+    if args.resume_adapter and args.resume_checkpoint:
+        parser.error("--resume-adapter starts a new training stage; do not combine it with --resume-checkpoint")
+    if args.save_steps < 1:
+        parser.error("--save-steps must be at least 1")
 
     records, curriculum = load_curriculum(args.curriculum)
     eval_records = None
@@ -269,16 +282,20 @@ def main(argv: list[str] | None = None) -> int:
     if args.validate_only:
         return 0
 
-    output_dir = ROOT / args.output_dir
-    if output_dir.exists() and any(output_dir.iterdir()) and not args.resume_adapter:
-        raise FileExistsError(f"refusing to overwrite non-empty candidate directory: {output_dir}")
+    output_dir = (ROOT / args.output_dir).resolve()
 
     import torch
     from peft import LoraConfig, PeftModel, get_peft_model
-    from transformers import AutoModelForCausalLM, AutoTokenizer, Trainer, set_seed
+    from transformers import AutoModelForCausalLM, AutoTokenizer, Trainer, TrainerCallback, set_seed
 
     if not torch.cuda.is_available() and not args.allow_cpu:
-        raise RuntimeError("CUDA is required for v20 training; use --validate-only for CPU preflight")
+        raise RuntimeError("CUDA is required for v20 training; use --allow-cpu for explicitly approved small-model CPU runs")
+
+    contract = build_contract(args, curriculum, eval_curriculum)
+    prepare_run(output_dir, contract, resume=bool(args.resume_checkpoint))
+    resume_checkpoint = select_checkpoint(output_dir, args.resume_checkpoint, contract)
+    if resume_checkpoint:
+        print(f"[Aerynza] verified exact training resume: {resume_checkpoint}", flush=True)
 
     set_seed(args.seed)
     tokenizer = AutoTokenizer.from_pretrained(args.model, revision=args.model_revision, use_fast=True)
@@ -341,7 +358,10 @@ def main(argv: list[str] | None = None) -> int:
         fp16=torch.cuda.is_available() and not cuda_bf16,
         logging_steps=5,
         eval_strategy="epoch",
-        save_strategy="no",
+        save_strategy="steps",
+        save_steps=args.save_steps,
+        save_total_limit=3,
+        save_only_model=False,
         report_to="none",
         remove_unused_columns=False,
         ddp_find_unused_parameters=False,
@@ -352,14 +372,23 @@ def main(argv: list[str] | None = None) -> int:
     class BalancedPackageTrainer(BalancedPackageTrainerMixin, Trainer):
         pass
 
+    class VerifiedCheckpointCallback(TrainerCallback):
+        def on_save(self, args: Any, state: Any, control: Any, **kwargs: Any) -> Any:
+            if state.is_world_process_zero:
+                write_checkpoint_manifest(Path(args.output_dir) / f"checkpoint-{state.global_step}", contract)
+            return control
+
     trainer = BalancedPackageTrainer(
         model=model,
         args=train_args,
         train_dataset=AscensionDataset(train_rows),
         eval_dataset=AscensionDataset(eval_rows),
         data_collator=AssistantOnlyCollator(tokenizer.pad_token_id),
+        callbacks=[VerifiedCheckpointCallback()],
     )
-    train_result = trainer.train()
+    train_result = trainer.train(
+        resume_from_checkpoint=str(resume_checkpoint) if resume_checkpoint else None
+    )
     if trainer.is_world_process_zero():
         model.save_pretrained(output_dir, safe_serialization=True)
         tokenizer.save_pretrained(output_dir)
@@ -367,8 +396,13 @@ def main(argv: list[str] | None = None) -> int:
             "status": "trained_not_promoted",
             "base_model": args.model,
             "base_model_revision": args.model_revision,
-            "adapter_dir": output_dir.relative_to(ROOT).as_posix(),
+            "adapter_dir": (output_dir.relative_to(ROOT).as_posix()
+                            if output_dir.is_relative_to(ROOT) else str(output_dir)),
             "resumed_from_adapter": args.resume_adapter,
+            "resumed_from_checkpoint": str(resume_checkpoint) if resume_checkpoint else None,
+            "global_step": trainer.state.global_step,
+            "checkpoint_interval_steps": args.save_steps,
+            "checkpoint_resume_contract": contract,
             "curriculum": curriculum,
             "eval_curriculum": eval_curriculum,
             "eval_is_independent": eval_curriculum is not None,
