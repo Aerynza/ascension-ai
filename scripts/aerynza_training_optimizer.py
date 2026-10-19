@@ -99,6 +99,10 @@ def analyze_canonical(report: dict[str, Any], failures: list[dict]) -> bool:
               and report["automatic_gate_passed"]
               and report["no_false_completion_claims_passed"]
               and report["blocking_capability_readiness_passed"])
+    if passed and failures:
+        add_failure(failures, "canonical", "aggregate", "gate_aggregate_inconsistent",
+                    "critical", "Aggregate pass conflicts with failed cases; inspect evaluator integrity")
+        passed = False
     if not passed and not failures:
         add_failure(failures, "canonical", "aggregate", "unknown_gate_mismatch",
                     "critical", "Reconcile inconsistent aggregate results before optimizing")
@@ -194,7 +198,9 @@ def analyze(evidence: dict[str, dict[str, Any] | None], source_hashes: dict[str,
     failures.sort(key=lambda f: (PRIORITY[f["severity"]], f["gate"], f["case_id"]))
     critical = any(row["severity"] == "critical" for row in failures)
     exhausted = attempt >= max_attempts
+    all_gates_pass = all(value == "pass" for value in statuses.values())
     action = ("stop_for_independent_review" if critical else
+              "release_review_only_no_retraining" if all_gates_pass else
               "stop_budget_exhausted" if exhausted else
               "investigate_and_prepare_reviewed_repair")
     advice = [
