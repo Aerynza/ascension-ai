@@ -79,7 +79,7 @@
     "label": "Aerynza AI v231 Production",
     "repo_id": "Qwen/Qwen3-1.7B-GGUF",
     "filename": "v231_release.gguf",
-    "download_url": "https://github.com/acensionlifeos-dev/ascension-ai/releases/download/v231-release/v231_release.gguf",
+    "download_url": "https://github.com/Aerynza/ascension-ai/releases/download/v231-release/v231_release.gguf",
     "sha256": "c784d75e2625ff4a28138eec1fca256787942ac40bca72b013270e5cb7999d10",
     "size_bytes": 1834426112,
     "minimum_render_plan": "pro_4gb",
