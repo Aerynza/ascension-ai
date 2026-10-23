@@ -1,0 +1,42 @@
+# Aerynza AI full v231 model on Render (prepared for approval)
+# This is the paid 4GB profile; it is NOT applied to the running free service.
+# Render web service: 2c-4g (2 CPU, 4GB RAM), currently listed at $85/month.
+# The main render.yaml remains free and operates with the seed model.
+# Full model pinned to GitHub Releases; sha256 and size verified by download_model.py.
+services:
+  - type: web
+    runtime: python
+    name: aerynza-ai
+    plan: 2c-4g
+    buildCommand: pip install -r requirements.txt && python scripts/download_model.py
+    startCommand: uvicorn src.serving.api:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    autoDeploy: false
+    envVars:
+      # Keep the existing secret in Render; never commit it to this repository.
+      - key: ASCENSION_AI_SERVICE_TOKEN
+        sync: false
+      - key: ASCENSION_AI_AUTH_MODE
+        value: production
+      - key: ASCENSION_MODEL_PROFILE
+        value: pro_v231
+      - key: ASCENSION_MODEL_CONTEXT
+        value: "2048"
+      - key: ASCENSION_MODEL_BATCH
+        value: "32"
+      - key: ASCENSION_MODEL_THREADS
+        value: "2"
+      - key: ASCENSION_MODEL_THREADS_BATCH
+        value: "2"
+      - key: AERYNZA_AI_RAM_BUDGET_BYTES
+        value: "3221225472"
+      - key: ASCENSION_AI_RAM_BUDGET_BYTES
+        value: "3221225472"
+      - key: WEB_CONCURRENCY
+        value: "1"
+      - key: ASCENSION_AI_ALLOWED_ORIGINS
+        value: https://aerynzalife.onrender.com
+      - key: AERYNZA_AI_ENABLE_DEVICE_ROUTES
+        value: "false"
+      - key: AERYNZA_AI_ENABLE_PROVIDER_ROUTES
+        value: "false"
