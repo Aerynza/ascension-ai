@@ -6,7 +6,6 @@ import asyncio
 import hashlib
 import hmac
 import json
-import keyring
 import os
 import secrets
 import time
@@ -23,28 +22,40 @@ _SESSION_LOCK = Lock()
 MAX_SESSION_CONTEXT_BYTES = 200_000
 
 
-def _session_key(session_id: str, authorization: str | None) -> str:
-    token = ""
-    if authorization and authorization.lower().startswith("bearer "):
-        token = authorization[7:].strip()
+def _session_key(session_id: str, token: str) -> str:
+    """Bind stored context to the verified bearer, not a client-chosen session id alone."""
     return hashlib.sha256(f"{token}:{session_id}".encode("utf-8")).hexdigest()
 
 
-def get_session_context(session_id: str, authorization: str | None) -> dict:
-    if not session_id:
+def _strip_provider_keys(value):
+    """Drop provider credentials before anything is persisted."""
+    if isinstance(value, dict):
+        return {
+            key: _strip_provider_keys(item)
+            for key, item in value.items()
+            if key != "provider_keys"
+        }
+    if isinstance(value, list):
+        return [_strip_provider_keys(item) for item in value]
+    return value
+
+
+def get_session_context(session_id: str, token: str) -> dict:
+    if not session_id or not token:
         return {}
-    key = _session_key(session_id, authorization)
+    key = _session_key(session_id, token)
     with _SESSION_LOCK:
         return SESSION_CONTEXTS.get(key, {}).copy()
 
 
-def set_session_context(session_id: str, context: dict, authorization: str | None, merge: bool = False) -> dict:
-    if not session_id:
-        return context
-    key = _session_key(session_id, authorization)
+def set_session_context(session_id: str, context: dict, token: str, merge: bool = False) -> dict:
+    if not session_id or not token:
+        return _strip_provider_keys(context)
+    safe_context = _strip_provider_keys(context)
+    key = _session_key(session_id, token)
     with _SESSION_LOCK:
         existing = SESSION_CONTEXTS.get(key, {}) if merge else {}
-        merged = _merge_context(existing, context)
+        merged = _merge_context(existing, safe_context)
         if len(json.dumps(merged, default=str)) > MAX_SESSION_CONTEXT_BYTES:
             raise ValueError("session context exceeds size limit")
         SESSION_CONTEXTS[key] = merged
@@ -63,14 +74,14 @@ def _merge_context(existing: dict, new: dict) -> dict:
     return result
 
 
-def resolve_session_context(request, authorization: str | None) -> dict:
-    """Merge persisted session context with request context; persist the result when asked."""
+def resolve_session_context(request, token: str) -> dict:
+    """Merge persisted session context with request context; persist only when asked."""
     if not getattr(request, "session_id", None):
         return request.context
-    stored = get_session_context(request.session_id, authorization)
+    stored = get_session_context(request.session_id, token)
     merged = _merge_context(stored, request.context)
     if getattr(request, "persist_context", False):
-        set_session_context(request.session_id, request.context, authorization, merge=True)
+        set_session_context(request.session_id, request.context, token, merge=True)
     return merged
 
 
@@ -87,7 +98,7 @@ from src.core.action_runtime import shell_action_catalog, shell_allows_action, v
 from src.core.cognition import TALENTS, build_action_execution_contract, build_cognitive_packet, extract_memory_candidates, hybrid_retrieve
 from src.core.contracts import Shell, Tier
 from src.core.media_executor import generate_image, parse_image_request
-from src.core.model_runtime import NativeInferenceQueueTimeout, runtime
+from src.core.model_runtime import ModelRamBudgetExceeded, NativeInferenceQueueTimeout, runtime
 from src.financial.plaid_client import get_balances, parse_balance_query
 from src.core.orchestrator import deterministic_response, prepare_inference, respond, scope_context, surface_plan
 from src.core.safety import medical_emergency_response
@@ -112,6 +123,8 @@ def production_replacement_enabled() -> bool:
 async def lifespan(_: FastAPI):
     try:
         await asyncio.to_thread(runtime.load)
+    except ModelRamBudgetExceeded:
+        raise
     except Exception as error:
         print(f"Aerynza native model did not load: {error}")
     yield
@@ -165,7 +178,7 @@ class IntelligenceRequest(BaseModel):
     temperature: float = Field(default=0.65, ge=0.0, le=1.2)
     max_tokens: int = Field(default=500, ge=32, le=1600)
     session_id: str = Field(default="", max_length=120)
-    persist_context: bool = True
+    persist_context: bool = False
 
     @field_validator("messages")
     @classmethod
@@ -199,7 +212,7 @@ class SurfacePlanRequest(BaseModel):
     available_actions: list[str] = Field(default_factory=list, max_length=100)
     allowed_capabilities: list[str] = Field(default_factory=list, max_length=100)
     session_id: str = Field(default="", max_length=120)
-    persist_context: bool = True
+    persist_context: bool = False
 
 
 class CognitionRequest(SurfacePlanRequest):
@@ -209,7 +222,15 @@ class CognitionRequest(SurfacePlanRequest):
 class RetrievalRequest(BaseModel):
     query: str = Field(min_length=1, max_length=MAX_MESSAGE_LENGTH)
     context: dict = Field(default_factory=dict)
+    shell: Shell = Shell.AP
     top_k: int = Field(default=6, ge=1, le=10)
+
+    @field_validator("context")
+    @classmethod
+    def bound_context(cls, value: dict) -> dict:
+        if len(json.dumps(value, default=str)) > 50_000:
+            raise ValueError("context packet is too large")
+        return value
 
 
 class MemoryCandidateRequest(BaseModel):
@@ -238,7 +259,7 @@ class RelationshipFeedRequest(BaseModel):
     context: dict = Field(default_factory=dict)
     surface: str = Field(default="relationship_feed", max_length=100)
     session_id: str = Field(default="", max_length=120)
-    persist_context: bool = True
+    persist_context: bool = False
 
 
 class ThesisRequest(BaseModel):
@@ -277,27 +298,73 @@ class ActionReceiptRequest(BaseModel):
     receipt: dict = Field(default_factory=dict)
 
 
-def _authorized_token(authorization: str | None) -> bool:
+def _service_tokens() -> list[str]:
+    """Configured bearer secrets. An email address is never a secret."""
+    tokens: list[str] = []
+    for name in ("ASCENSION_AI_SERVICE_TOKEN", "AERYNZA_AI_SERVICE_TOKEN"):
+        value = os.getenv(name, "").strip()
+        if value and value not in tokens:
+            tokens.append(value)
+    return tokens
+
+
+def _token_matches(supplied: str, expected: str) -> bool:
+    """Constant-time compare that does not throw when the strings differ in length."""
+    if not supplied or not expected:
+        return False
+    return hmac.compare_digest(
+        hashlib.sha256(supplied.encode("utf-8")).digest(),
+        hashlib.sha256(expected.encode("utf-8")).digest(),
+    )
+
+
+def _is_production() -> bool:
+    if os.getenv("RENDER", "").strip().lower() == "true":
+        return True
+    mode = os.getenv("AERYNZA_AI_AUTH_MODE", os.getenv("ASCENSION_AI_AUTH_MODE", "")).strip().lower()
+    if mode == "production":
+        return True
+    env_name = os.getenv("AERYNZA_AI_ENV", os.getenv("ASCENSION_AI_ENV", "")).strip().lower()
+    return env_name in {"production", "prod"}
+
+
+def _env_flag(*names: str) -> bool:
+    return any(os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"} for name in names)
+
+
+def device_routes_enabled() -> bool:
+    return _env_flag("AERYNZA_AI_ENABLE_DEVICE_ROUTES", "ASCENSION_AI_ENABLE_DEVICE_ROUTES")
+
+
+def provider_routes_enabled() -> bool:
+    return _env_flag("AERYNZA_AI_ENABLE_PROVIDER_ROUTES", "ASCENSION_AI_ENABLE_PROVIDER_ROUTES")
+
+
+def require_device_routes() -> None:
+    if not device_routes_enabled():
+        raise HTTPException(status_code=403, detail="Device execution is disabled")
+
+
+def require_provider_routes() -> None:
+    if not provider_routes_enabled():
+        raise HTTPException(status_code=403, detail="Provider routes are disabled")
+
+
+def require_access(authorization: str | None = Header(default=None)) -> str:
+    """Require a bearer service token. Fail closed when none is configured."""
+    configured = _service_tokens()
+    if not configured:
+        detail = "Service token is not configured for production" if _is_production() else "Service token is not configured"
+        raise HTTPException(status_code=503, detail=detail)
     supplied = ""
     if authorization and authorization.lower().startswith("bearer "):
         supplied = authorization[7:].strip()
-    if not supplied:
-        return False
-    if supplied in SESSIONS:
-        return True
-    allowed_email = os.getenv("ASCENSION_AI_ALLOWED_EMAIL", "").strip()
-    if allowed_email and hmac.compare_digest(supplied.lower(), allowed_email.lower()):
-        return True
-    expected = [
-        os.getenv("ASCENSION_AI_TEST_TOKEN", "").strip(),
-        os.getenv("ASCENSION_AI_SERVICE_TOKEN", "").strip(),
-    ]
-    return any(token and hmac.compare_digest(supplied, token) for token in expected)
-
-
-def require_access(authorization: str | None = Header(default=None)) -> None:
-    """Local-only access: authentication is not required for the personal desktop build."""
-    return
+    matched = False
+    for expected in configured:
+        matched = _token_matches(supplied, expected) or matched
+    if not matched:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return supplied
 
 
 def require_native_ready() -> None:
@@ -460,8 +527,8 @@ async def talents(_: None = Depends(require_access)) -> dict:
 
 
 @app.post("/v1/cognition")
-async def cognition(request: CognitionRequest, authorization: str | None = Header(default=None), _: None = Depends(require_access)) -> dict:
-    context = resolve_session_context(request, authorization)
+async def cognition(request: CognitionRequest, token: str = Depends(require_access)) -> dict:
+    context = resolve_session_context(request, token)
     scoped_context = scope_context(context, request.shell)
     packet = build_cognitive_packet(
         request.trigger,
@@ -481,9 +548,9 @@ async def cognition(request: CognitionRequest, authorization: str | None = Heade
 
 
 @app.post("/v1/agent/plan")
-async def agent_plan(request: CognitionRequest, access: None = Depends(require_access)) -> dict:
+async def agent_plan(request: CognitionRequest, token: str = Depends(require_access)) -> dict:
     """Plan but never silently execute; the authenticated product shell owns execution."""
-    return await cognition(request, access)
+    return await cognition(request, token)
 
 
 @app.post("/v1/retrieve")
@@ -507,7 +574,7 @@ async def memory_candidates(request: MemoryCandidateRequest, _: None = Depends(r
 
 
 @app.post("/v1/thesis")
-async def thesis(request: ThesisRequest, _: None = Depends(require_access)) -> dict:
+async def thesis(request: ThesisRequest, _: str = Depends(require_access)) -> dict:
     required_shell = {
         "human": {Shell.AP, Shell.LIFE_OS},
         "sprout": {Shell.AP, Shell.LIFE_OS},
@@ -515,23 +582,6 @@ async def thesis(request: ThesisRequest, _: None = Depends(require_access)) -> d
         "family": {Shell.NEXUS_FAMILY},
         "product": {Shell.CORE},
     }
-
-
-@app.post("/v1/thesis/contribution")
-async def thesis_contribution(request: ThesisContributionRequest, _: None = Depends(require_access)) -> dict:
-    if request.shell not in {Shell.AP, Shell.LIFE_OS}:
-        raise HTTPException(status_code=403, detail="only the member's AP or LifeOS shell can prepare a thesis contribution")
-    try:
-        contribution = build_member_thesis_contribution(
-            request.member_id,
-            request.target_scope,
-            request.human_thesis,
-            request.selections,
-            request.consent_receipt_id,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return {**contribution, "shell": request.shell.value, "outside_provider": False}
     if request.shell not in required_shell[request.scope]:
         raise HTTPException(status_code=403, detail=f"{request.shell.value} cannot build the {request.scope} thesis")
     try:
@@ -545,9 +595,26 @@ async def thesis_contribution(request: ThesisContributionRequest, _: None = Depe
     }
 
 
+@app.post("/v1/thesis/contribution")
+async def thesis_contribution(request: ThesisContributionRequest, _: str = Depends(require_access)) -> dict:
+    if request.shell not in {Shell.AP, Shell.LIFE_OS}:
+        raise HTTPException(status_code=403, detail="only the member's AP or LifeOS shell can prepare a thesis contribution")
+    try:
+        contribution = build_member_thesis_contribution(
+            request.member_id,
+            request.target_scope,
+            request.human_thesis,
+            request.selections,
+            request.consent_receipt_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {**contribution, "shell": request.shell.value, "outside_provider": False}
+
+
 @app.post("/v1/surface-plan")
-async def plan_surfaces(request: SurfacePlanRequest, authorization: str | None = Header(default=None), _: None = Depends(require_access)) -> dict:
-    context = resolve_session_context(request, authorization)
+async def plan_surfaces(request: SurfacePlanRequest, token: str = Depends(require_access)) -> dict:
+    context = resolve_session_context(request, token)
     return surface_plan(
         shell=request.shell,
         tier=request.tier,
@@ -559,8 +626,8 @@ async def plan_surfaces(request: SurfacePlanRequest, authorization: str | None =
 
 
 @app.post("/v1/session/context")
-async def set_session(request: SessionContextRequest, authorization: str | None = Header(default=None), _: None = Depends(require_access)) -> dict:
-    merged = set_session_context(request.session_id, request.context, authorization, merge=request.merge)
+async def set_session(request: SessionContextRequest, token: str = Depends(require_access)) -> dict:
+    merged = set_session_context(request.session_id, request.context, token, merge=request.merge)
     return {
         "session_id": request.session_id,
         "keys": list(merged.keys()),
@@ -570,8 +637,8 @@ async def set_session(request: SessionContextRequest, authorization: str | None 
 
 
 @app.post("/v1/session/data-panels")
-async def session_data_panels(request: SessionRefreshRequest, authorization: str | None = Header(default=None), _: None = Depends(require_access)) -> dict:
-    context = get_session_context(request.session_id, authorization)
+async def session_data_panels(request: SessionRefreshRequest, token: str = Depends(require_access)) -> dict:
+    context = get_session_context(request.session_id, token)
     scoped_context = scope_context(context, request.shell)
     packet = build_cognitive_packet(
         request.trigger,
@@ -641,8 +708,8 @@ def _build_relationships_feed(context: dict, shell: Shell) -> dict:
 
 
 @app.post("/v1/relationships/feed")
-async def relationships_feed(request: RelationshipFeedRequest, authorization: str | None = Header(default=None), _: None = Depends(require_access)) -> dict:
-    context = resolve_session_context(request, authorization)
+async def relationships_feed(request: RelationshipFeedRequest, token: str = Depends(require_access)) -> dict:
+    context = resolve_session_context(request, token)
     scoped_context = scope_context(context, request.shell)
     packet = build_cognitive_packet("mixed social feed", scoped_context, [])
     feed = _build_relationships_feed(scoped_context, request.shell)
@@ -658,8 +725,8 @@ async def relationships_feed(request: RelationshipFeedRequest, authorization: st
 
 
 @app.post("/v1/intelligence")
-async def intelligence(request: IntelligenceRequest, authorization: str | None = Header(default=None), _: None = Depends(require_access)) -> dict:
-    context = resolve_session_context(request, authorization)
+async def intelligence(request: IntelligenceRequest, token: str = Depends(require_access)) -> dict:
+    context = resolve_session_context(request, token)
     emergency = medical_emergency_response(request.messages[-1].content)
     if emergency:
         return {
@@ -681,9 +748,9 @@ async def intelligence(request: IntelligenceRequest, authorization: str | None =
             "safety_intercept": "medical_emergency",
         }
 
-    # Natural image-generation requests go straight to the configured media provider.
+    # Hosted image generation stays off unless the operator enables provider routes.
     image_prompt = parse_image_request(request.messages[-1].content)
-    if image_prompt:
+    if provider_routes_enabled() and image_prompt:
         started = time.perf_counter()
         result = await asyncio.to_thread(generate_image, image_prompt, context)
         latency_ms = round((time.perf_counter() - started) * 1000)
@@ -714,8 +781,7 @@ async def intelligence(request: IntelligenceRequest, authorization: str | None =
             "latency_ms": latency_ms,
         }
 
-    # Balance / fund queries go to Plaid if configured.
-    if parse_balance_query(request.messages[-1].content):
+    if provider_routes_enabled() and parse_balance_query(request.messages[-1].content):
         started = time.perf_counter()
         result = await asyncio.to_thread(get_balances, context)
         latency_ms = round((time.perf_counter() - started) * 1000)
@@ -756,13 +822,13 @@ async def intelligence(request: IntelligenceRequest, authorization: str | None =
 
 
 @app.post("/chat")
-async def chat(request: IntelligenceRequest, access: None = Depends(require_access)) -> dict:
-    return await intelligence(request, access)
+async def chat(request: IntelligenceRequest, token: str = Depends(require_access)) -> dict:
+    return await intelligence(request, token)
 
 
 @app.post("/v1/stream")
-async def stream_intelligence(request: IntelligenceRequest, authorization: str | None = Header(default=None), _: None = Depends(require_access)):
-    context = resolve_session_context(request, authorization)
+async def stream_intelligence(request: IntelligenceRequest, token: str = Depends(require_access)):
+    context = resolve_session_context(request, token)
     emergency = medical_emergency_response(request.messages[-1].content)
     if emergency:
         def emergency_events():
@@ -777,9 +843,8 @@ async def stream_intelligence(request: IntelligenceRequest, authorization: str |
             yield f"event: done\ndata: {json.dumps({'latency_ms': 0, 'production_replacement_enabled': production_replacement_enabled()}, separators=(',', ':'))}\n\n"
         return StreamingResponse(emergency_events(), media_type="text/event-stream", headers={"X-Accel-Buffering": "no", "Cache-Control": "no-store"})
 
-    # Natural image-generation requests are sent to the configured media provider.
     image_prompt = parse_image_request(request.messages[-1].content)
-    if image_prompt:
+    if provider_routes_enabled() and image_prompt:
         started = time.perf_counter()
         result = await asyncio.to_thread(generate_image, image_prompt, context)
         latency_ms = round((time.perf_counter() - started) * 1000)
@@ -811,8 +876,7 @@ async def stream_intelligence(request: IntelligenceRequest, authorization: str |
             headers={"X-Accel-Buffering": "no", "Cache-Control": "no-store"},
         )
 
-    # Balance / fund queries go to Plaid if configured.
-    if parse_balance_query(request.messages[-1].content):
+    if provider_routes_enabled() and parse_balance_query(request.messages[-1].content):
         started = time.perf_counter()
         result = await asyncio.to_thread(get_balances, context)
         latency_ms = round((time.perf_counter() - started) * 1000)
@@ -893,7 +957,7 @@ async def stream_intelligence(request: IntelligenceRequest, authorization: str |
 
 
 @app.post("/generate")
-async def generate(request: LegacyGenerationRequest, access: None = Depends(require_access)) -> dict:
+async def generate(request: LegacyGenerationRequest, token: str = Depends(require_access)) -> dict:
     result = await intelligence(
         IntelligenceRequest(
             shell=Shell.CORE,
@@ -903,7 +967,7 @@ async def generate(request: LegacyGenerationRequest, access: None = Depends(requ
             max_tokens=request.max_new_tokens,
             temperature=request.temperature,
         ),
-        access,
+        token,
     )
     return {
         "content": result["content"],
@@ -922,13 +986,14 @@ class WindowsActionRequest(BaseModel):
 
 
 @app.post("/v1/windows/execute")
-async def windows_execute(request: WindowsActionRequest, access: None = Depends(require_access)) -> dict:
+async def windows_execute(request: WindowsActionRequest, _: str = Depends(require_access)) -> dict:
     """Execute one allowed local Windows desktop action.
 
     Only the actions listed in `src/windows/executor.py` are allowed.
-    The request is authenticated and the shell remains responsible for
-    deciding when an action is appropriate.
+    The route stays dark unless AERYNZA_AI_ENABLE_DEVICE_ROUTES or
+    ASCENSION_AI_ENABLE_DEVICE_ROUTES is set.
     """
+    require_device_routes()
     return executor.run(request.action, **request.params)
 
 
@@ -939,12 +1004,13 @@ class AndroidActionRequest(BaseModel):
 
 
 @app.post("/v1/android/execute")
-async def android_execute(request: AndroidActionRequest, access: None = Depends(require_access)) -> dict:
+async def android_execute(request: AndroidActionRequest, _: str = Depends(require_access)) -> dict:
     """Execute one allowed Android action via a connected adb device.
 
     The phone must have USB debugging enabled and be authorized.
-    The bridge uses the local `tools/adb/platform-tools/adb.exe` binary.
+    The route stays dark unless device routes are explicitly enabled.
     """
+    require_device_routes()
     return android_bridge.run(request.action, **request.params)
 
 
@@ -955,8 +1021,9 @@ class iPhoneActionRequest(BaseModel):
 
 
 @app.post("/v1/iphone/execute")
-async def iphone_execute(request: iPhoneActionRequest, access: None = Depends(require_access)) -> dict:
+async def iphone_execute(request: iPhoneActionRequest, _: str = Depends(require_access)) -> dict:
     """Execute one allowed iPhone action through a user-configured iOS Shortcut webhook."""
+    require_device_routes()
     return iphone_bridge.run(request.action, context=request.context, **request.params)
 
 
@@ -967,18 +1034,20 @@ class MediaRequest(BaseModel):
 
 
 @app.post("/v1/media/generate")
-async def media_generate(request: MediaRequest, _: None = Depends(require_access)) -> dict:
+async def media_generate(request: MediaRequest, _: str = Depends(require_access)) -> dict:
     """Generate media through the configured outside provider. DALL-E 3 is the first supported provider."""
+    require_provider_routes()
     return await asyncio.to_thread(generate_image, request.prompt, request.context)
 
 
 @app.post("/v1/iphone/inbox")
-async def iphone_inbox(payload: dict, access: None = Depends(require_access)) -> dict:
+async def iphone_inbox(payload: dict, _: str = Depends(require_access)) -> dict:
     """Receive a JSON payload from an iOS Shortcut.
 
     The iPhone can POST here to send battery, location, or any other
     data it is allowed to share. Data is stored locally in data/iphone_inbox.json.
     """
+    require_device_routes()
     return iphone_bridge.receive(payload)
 
 
@@ -989,7 +1058,11 @@ class LoginRequest(BaseModel):
 
 @app.post("/v1/login")
 async def login(request: LoginRequest) -> dict:
-    """Authenticate with email and password stored in Windows Credential Manager."""
+    """Authenticate with email and password stored in Windows Credential Manager.
+
+    The resulting lab session does not authorize service routes.
+    """
+    import keyring
     stored = keyring.get_password(KEYRING_SERVICE, request.email)
     if not stored or not hmac.compare_digest(stored, request.password):
         raise HTTPException(status_code=401, detail="Invalid email or password.")

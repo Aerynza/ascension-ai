@@ -29,10 +29,48 @@ class NativeInferenceQueueTimeout(RuntimeError):
     """The serialized native runtime could not start within its queue budget."""
 
 
+class ModelRamBudgetExceeded(RuntimeError):
+    """The pinned GGUF is larger than the configured host RAM budget."""
+
+
+def configured_ram_budget_bytes() -> int | None:
+    """Return the GGUF byte budget, or None when no budget is configured.
+
+    AERYNZA_AI_RAM_BUDGET_BYTES is the primary name. ASCENSION_AI_RAM_BUDGET_BYTES
+    is accepted as an alias. An invalid value fails closed.
+    """
+    raw = os.getenv("AERYNZA_AI_RAM_BUDGET_BYTES", os.getenv("ASCENSION_AI_RAM_BUDGET_BYTES", "")).strip()
+    if not raw:
+        return None
+    try:
+        budget = int(raw)
+    except ValueError as exc:
+        raise ModelRamBudgetExceeded("RAM budget is not an integer byte count") from exc
+    if budget <= 0:
+        raise ModelRamBudgetExceeded("RAM budget must be a positive byte count")
+    return budget
+
+
+def assert_gguf_within_ram_budget(profile: dict, file_size: int | None = None, budget: int | None = None) -> None:
+    """Refuse to boot when the GGUF exceeds the RAM budget."""
+    if budget is None:
+        budget = configured_ram_budget_bytes()
+    if budget is None:
+        return
+    declared = int(profile.get("size_bytes") or 0)
+    observed = declared if file_size is None else max(declared, int(file_size))
+    if observed > budget:
+        raise ModelRamBudgetExceeded(f"GGUF size {observed} bytes exceeds RAM budget {budget} bytes")
+
+
 class NativeModelRuntime:
     def __init__(self, exit_callback=None) -> None:
         self.model = None
-        self.requested_profile_name = os.getenv("ASCENSION_MODEL_PROFILE", "pro").strip().lower()
+        self.requested_profile_name = (
+            os.getenv("ASCENSION_MODEL_PROFILE")
+            or os.getenv("AERYNZA_MODEL_PROFILE")
+            or "starter"
+        ).strip().lower()
         self.profile_name = resolve_profile_name(self.requested_profile_name)
         self.profile: dict = {}
         self.loaded_at: float | None = None
@@ -91,20 +129,22 @@ class NativeModelRuntime:
 
     def load(self) -> None:
         try:
-            from llama_cpp import Llama
             self.profile = self._read_profile()
+            assert_gguf_within_ram_budget(self.profile)
             path = self._model_path()
             if not path.is_file():
                 raise RuntimeError("Pinned model file is missing. Run scripts/download_model.py during the build.")
+            assert_gguf_within_ram_budget(self.profile, path.stat().st_size)
             if os.getenv("ASCENSION_VERIFY_MODEL_ON_BOOT", "1") != "0" and self._sha256(path) != self.profile["sha256"]:
                 raise RuntimeError("Pinned model checksum verification failed.")
+            from llama_cpp import Llama
             lora_path = self._lora_path()
             model_kwargs = {
                 "model_path": str(path),
-                "n_ctx": int(os.getenv("ASCENSION_MODEL_CONTEXT", self.profile["context_tokens"])),
+                "n_ctx": int(os.getenv("ASCENSION_MODEL_CONTEXT", os.getenv("AERYNZA_MODEL_CONTEXT", "768"))),
                 "n_threads": int(os.getenv("ASCENSION_MODEL_THREADS", self.profile["threads"])),
                 "n_threads_batch": int(os.getenv("ASCENSION_MODEL_THREADS_BATCH", self.profile["threads"])),
-                "n_batch": int(os.getenv("ASCENSION_MODEL_BATCH", "64")),
+                "n_batch": int(os.getenv("ASCENSION_MODEL_BATCH", os.getenv("AERYNZA_MODEL_BATCH", "16"))),
                 "use_mmap": True,
                 "use_mlock": False,
                 "verbose": False,
