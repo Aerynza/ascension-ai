@@ -10,7 +10,10 @@ import hashlib
 import json
 from pathlib import Path
 
-from scripts.build_next_gpu_packs import ROOT, build
+try:
+    from .build_next_gpu_packs import ROOT, build
+except ImportError:
+    from build_next_gpu_packs import ROOT, build
 
 
 def sha256(path: Path) -> str:
