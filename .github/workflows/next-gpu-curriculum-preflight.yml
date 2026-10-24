@@ -1,0 +1,54 @@
+name: Next-GPU closed-system curriculum preflight
+
+on:
+  push:
+    branches:
+      - codex/aerynza-gpu-readiness-integrated
+  pull_request:
+    paths:
+      - 'scripts/build_next_gpu_packs.py'
+      - 'scripts/train_qwen_ascension_lora.py'
+      - 'scripts/aerynza_checkpoint_resume.py'
+      - 'scripts/launch_v251_foundation.sh'
+      - 'training_packs/next_gpu/**'
+      - 'evals/training/aerynza_v25*'
+      - 'tests/test_next_gpu_packs.py'
+      - 'tests/test_aerynza_checkpoint_resume.py'
+      - '.github/workflows/next-gpu-curriculum-preflight.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cpu-preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Validate v251 foundation and v252 execution datasets
+        run: |
+          python3 scripts/validate_v251_packages.py
+          python3 scripts/validate_v252_packages.py
+      - name: Validate optimizer/RNG resume contract without GPU
+        run: python3 -m unittest discover -s tests -p 'test_aerynza_checkpoint_resume.py' -v
+      - name: Validate 640-capability curriculum coverage and no heldout leakage
+        run: python3 -m unittest discover -s tests -p 'test_next_gpu_packs.py' -v
+      - name: Compile GPU curriculum without running a model
+        run: |
+          python3 scripts/build_next_gpu_packs.py --dry-run
+          python3 scripts/build_next_gpu_packs.py --output training_packs/next_gpu/generated_ci
+      - name: Validate LoRA loader on generated data without GPU
+        run: |
+          python3 scripts/train_qwen_ascension_lora.py \
+            --curriculum 'training_packs/next_gpu/generated_ci/*.jsonl' \
+            --eval-curriculum evals/training/aerynza_v251_foundation_heldout.jsonl \
+            --output-dir checkpoints/next_gpu_preflight_only \
+            --validate-only
+      - name: Python syntax and shell syntax
+        run: |
+          python3 -m py_compile scripts/build_next_gpu_packs.py scripts/train_qwen_ascension_lora.py scripts/aerynza_checkpoint_resume.py
+          bash -n scripts/launch_v251_foundation.sh
