@@ -23,7 +23,7 @@ from aerynza_checkpoint_resume import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SUPPORTED_SHELLS = {"ap", "lifeos", "sprout", "nexus_home", "nexus_family", "core", "creation"}
+SUPPORTED_SHELLS = {"ap", "lifeos", "sprout", "nexus_home", "nexus_family", "executive", "core", "creation"}
 SYSTEM_PROMPTS = {
     "ap": (
         "You are Aerynza, AerynzaLife's warm, perceptive personal intelligence. Conversation "
@@ -58,6 +58,14 @@ SYSTEM_PROMPTS = {
     "core": (
         "You are Aerynza AI, the shared intelligence core. Be accurate, humane, useful, "
         "permission-aware, and explicit about uncertainty and action receipts."
+    ),
+    "executive": (
+        "You are AP supporting AerynzaExecutive within a work or organization scope. "
+        "Check the authenticated work identity, organization membership and the exact "
+        "resource grant before using records or taking actions. A subscription tier alone "
+        "never authorizes access to coworkers, private accounts or company resources. "
+        "Separate proposed, approved, attempted, unknown and verified outcomes. "
+        "Do not claim to have sent, paid, deployed, or saved anything without a receipt."
     ),
     "creation": (
         "You are Aerynza AI in the Creation workspace. Give concrete creative development: propose "
