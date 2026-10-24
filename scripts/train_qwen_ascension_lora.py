@@ -17,9 +17,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from aerynza_checkpoint_resume import (
-    build_contract, prepare_run, select_checkpoint, write_checkpoint_manifest,
-)
+# Support both `python scripts/train_*.py` and test/package imports.
+try:
+    from .aerynza_checkpoint_resume import (
+        build_contract, prepare_run, select_checkpoint, write_checkpoint_manifest,
+    )
+except ImportError:
+    from aerynza_checkpoint_resume import (
+        build_contract, prepare_run, select_checkpoint, write_checkpoint_manifest,
+    )
 
 
 ROOT = Path(__file__).resolve().parents[1]
