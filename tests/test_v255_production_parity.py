@@ -2,6 +2,7 @@
 import unittest
 
 from scripts.build_next_gpu_packs import build, heldout_set, normalize, read_jsonl, SOURCES
+from scripts.build_v255_independent_eval import compile_heldout, write_evaluation
 
 
 class V255CurriculumContract(unittest.TestCase):
@@ -41,6 +42,27 @@ class V255CurriculumContract(unittest.TestCase):
         for row in read_jsonl(SOURCES["v255_parity_heldout"]):
             self.assertEqual(row["reserved_for"], "independent_evaluation_never_train")
             self.assertEqual(row["review_status"], "pending_human_review")
+
+    def test_independent_union_is_separate_hash_bound_and_long_lived(self):
+        import tempfile
+        from pathlib import Path
+        cases, manifest = compile_heldout()
+        self.assertGreaterEqual(len(cases), 60)
+        self.assertEqual(len(cases), manifest["case_count"])
+        self.assertEqual(manifest["purpose"], "evaluation_only_never_train")
+        train, _ = build()
+        self.assertFalse({normalize(r["user"]) for r in train} &
+                         {normalize(r["user"]) for r in cases})
+        self.assertEqual(len({r["id"] for r in cases}), len(cases))
+        self.assertTrue(any(r["shell"] == "executive" for r in cases))
+        with tempfile.TemporaryDirectory() as folder:
+            target = Path(folder) / "evaluation.jsonl"
+            first = write_evaluation(target)
+            self.assertEqual(write_evaluation(target), first)
+            self.assertEqual(len(read_jsonl(target)), len(cases))
+            target.write_text("changed data", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "refusing to overwrite"):
+                write_evaluation(target)
 
 
 if __name__ == "__main__":
