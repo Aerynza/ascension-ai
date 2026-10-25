@@ -21,6 +21,10 @@ SOURCES = {
     "seed": ROOT / "training_packs/next_gpu/seed_scenarios.jsonl",
     "cross_domain_v254": ROOT / "training_packs/next_gpu/cross_domain_v254.jsonl",
     "cross_domain_v254_heldout": ROOT / "training_packs/next_gpu/cross_domain_v254_heldout.jsonl",
+    "v253_reasoning": ROOT / "evals/training/aerynza_v253_reasoning_execution_train.jsonl",
+    "v253_ambient": ROOT / "evals/training/aerynza_v253_ambient_sovereignty_train.jsonl",
+    "v253_heldout": ROOT / "evals/training/aerynza_v253_independent_heldout.jsonl",
+    "v253_benchmarks": ROOT / "evals/benchmarks/aerynza_v253_independent_tasks.json",
 }
 SUPPORTED = {"ap", "lifeos", "sprout", "nexus_home", "nexus_family", "executive"}
 SHELL_ALIASES = {"core": "ap", "creation": "ap"}
@@ -73,10 +77,12 @@ def heldout_set() -> set[str]:
         cases = obj if isinstance(obj, list) else obj.get("cases", [])
         for record in cases:
             if isinstance(record, dict):
-                prompts.add(normalize(record.get("user") or record.get("prompt") or ""))
+                prompts.add(normalize(record.get("user") or record.get("prompt") or record.get("task") or ""))
     # Independent v254 single-request execution tests never enter the training mix.
     for record in read_jsonl(SOURCES["cross_domain_v254_heldout"]):
         prompts.add(normalize(record.get("user") or ""))
+    for item in json.loads(SOURCES["v253_benchmarks"].read_text(encoding="utf-8")).get("cases", []):
+        prompts.add(normalize(item.get("task") or ""))
     for file in sorted((ROOT / "evals/training").glob("*heldout*.jsonl")):
         for record in read_jsonl(file):
             prompts.add(normalize(record.get("user") or record.get("prompt") or ""))
@@ -201,6 +207,15 @@ def build() -> tuple[list[dict], dict]:
         if not add(row, "next_gpu_seed_scenarios"):
             raise ValueError(f"Canonical scenario invalid: {row.get('id')}")
 
+    # v253's 72 targeted original SFT examples are kept separate from its
+    # independently authored 24 heldout prompts and 12 executable benchmarks.
+    for source in ("v253_reasoning", "v253_ambient"):
+        for row in read_jsonl(SOURCES[source]):
+            if row.get("review_status") != "pending_human_review" or row.get("provenance") != "ai_authored_synthetic":
+                raise ValueError(f"v253 record lacks reviewed provenance: {row.get('id')}")
+            if not add(row, source):
+                raise ValueError(f"v253 record excluded or duplicated: {row.get('id')}")
+
     # Cross-domain v254 teaches complete *planning and verification logic*.
     # The independent heldout file is hashed, scanned and never used as targets.
     for row in read_jsonl(SOURCES["cross_domain_v254"]):
@@ -215,7 +230,7 @@ def build() -> tuple[list[dict], dict]:
     counts = Counter(r["package"] for r in output)
     shells = Counter(r["shell"] for r in output)
     manifest = {
-        "version": "next_gpu_2026_10_v2_cross_domain",
+        "version": "next_gpu_2026_10_v3_targeted",
         "purpose": "GPU-ready curriculum; no training or provider execution performed",
         "base_model": "Qwen/Qwen3-1.7B",
         "base_model_revision": "70d244cc86ccca08cf5af4e1e306ecf908b1ad5e",
