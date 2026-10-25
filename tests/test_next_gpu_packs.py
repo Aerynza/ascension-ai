@@ -74,6 +74,22 @@ class NextGPUCurriculumTests(unittest.TestCase):
         self.assertIn("cross_domain_v254", self.manifest["source_sha256"])
         self.assertIn("cross_domain_v254_heldout", self.manifest["source_sha256"])
 
+    def test_targeted_v253_examples_integrated_and_benchmarks_excluded(self):
+        rows = [row for row in self.rows if row.get("source") in {"v253_reasoning", "v253_ambient"}]
+        self.assertEqual(len(rows), 72)
+        self.assertEqual(len({row["id"] for row in rows}), 72)
+        self.assertEqual(len({row["package"] for row in rows}), 12)
+        self.assertTrue(all(row["review_status"] == "pending_human_review" for row in rows))
+        holdout = SOURCES["v253_heldout"].read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(holdout), 24)
+        benchmark = json.loads(SOURCES["v253_benchmarks"].read_text(encoding="utf-8"))
+        self.assertEqual(len(benchmark["cases"]), 12)
+        users = {normalize(row["user"]) for row in self.rows}
+        for item in benchmark["cases"]:
+            self.assertNotIn(normalize(item["task"]), users)
+            self.assertIn(normalize(item["task"]), heldout_set())
+        self.assertIn("v253_benchmarks", self.manifest["source_sha256"])
+
     def test_training_output_is_deterministic(self):
         rows, manifest = build()
         self.assertEqual(rows, self.rows)
