@@ -11,6 +11,12 @@ on:
       - 'scripts/aerynza_checkpoint_resume.py'
       - 'scripts/aerynza_training_optimizer.py'
       - 'scripts/build_v253_640_execution_map.py'
+      - 'scripts/validate_v253_packages.py'
+      - 'scripts/build_v253_gpu_mix.py'
+      - 'evals/training/aerynza_v253_*.jsonl'
+      - 'evals/benchmarks/aerynza_v253_independent_tasks.json'
+      - 'training/v253/**'
+      - 'tests/test_v253_training_packages.py'
       - 'tests/test_v253_640_execution_map.py'
       - 'scripts/create_aerynza_repair_approval.py'
       - 'scripts/run_aerynza_repair_stage.py'
@@ -40,6 +46,8 @@ jobs:
         run: |
           python3 scripts/validate_v251_packages.py
           python3 scripts/validate_v252_packages.py
+          python3 scripts/validate_v253_packages.py
+          python3 -m unittest discover -s tests -p 'test_v253_training_packages.py' -v
       - name: Validate optimizer/RNG resume contract without GPU
         run: python3 -m unittest discover -s tests -p 'test_aerynza_checkpoint_resume.py' -v
       - name: Validate 640-capability curriculum coverage and no heldout leakage
