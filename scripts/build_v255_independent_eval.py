@@ -33,6 +33,7 @@ def compile_heldout() -> tuple[list[dict], dict]:
     seen_prompts: set[str] = set()
     seen_ids: set[str] = set()
     cases: list[dict] = []
+    rubric_only_ids: list[str] = []
     sources = {}
     for path in SOURCES:
         raw = path.read_bytes()
@@ -49,6 +50,14 @@ def compile_heldout() -> tuple[list[dict], dict]:
                 raise ValueError(f"duplicate independent heldout example: {key}")
             seen_prompts.add(prompt)
             seen_ids.add(key)
+            # v254 contains rubric-only behavioral cases without an assistant
+            # answer. They are reserved for external execution scoring, not
+            # fed as supervised Trainer eval targets or synthesized from rubrics.
+            if not isinstance(record.get("assistant"), str) or not record["assistant"].strip():
+                if not record.get("expected_behaviors") or not record.get("must_not_train"):
+                    raise ValueError(f"heldout lacks answer and explicit external rubric: {key}")
+                rubric_only_ids.append(key)
+                continue
             cases.append({**record, "shell": shell, "package": "independent_holdout"})
     if len(cases) < 60:
         raise ValueError(f"expected multi-domain heldout coverage, found {len(cases)}")
@@ -56,6 +65,8 @@ def compile_heldout() -> tuple[list[dict], dict]:
         "schema_version": 1,
         "purpose": "evaluation_only_never_train",
         "case_count": len(cases),
+        "rubric_only_benchmark_count": len(rubric_only_ids),
+        "rubric_only_case_ids": rubric_only_ids,
         "train_prompt_overlap": 0,
         "source_sha256": sources,
         "model_trained": False,
