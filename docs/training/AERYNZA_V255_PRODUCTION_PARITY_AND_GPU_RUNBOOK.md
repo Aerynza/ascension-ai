@@ -6,7 +6,7 @@
 
 - `training_packs/next_gpu/v255_production_parity.jsonl`: 36 original synthetic SFT tasks emphasizing useful general assistance and multi-domain execution truth (money, nutrition, fitness, grocery budgets, aspirations/Zillow, coding, reasoning, independent research, calendars, Executive products, Sprout, NexusHome and Family).
 - `training_packs/next_gpu/v255_production_parity_heldout.jsonl`: 18 independently written hard cases; never used as optimizer targets.
-- `scripts/build_v255_independent_eval.py`: builds a SHA-256-bound, fail-closed union of v251 + v253 + v254 + v255 evaluation cases, keeping all prompts outside training. No model is run by this compiler.
+- `scripts/build_v255_independent_eval.py`: builds a SHA-256-bound, fail-closed **60-case supervised evaluation union** from v251, v253 and v255, while retaining the separate v254 rubric-only cases for external execution scoring. Every prompt stays outside training. The rubric-only cases have no assistant answer and must never be fabricated as ground truth. No model runs in this compiler.
 - The v255 training rows are included in the deterministic next-GPU bundle; the independent eval union is the **evaluation** split used by the launcher, not a fine-tuning dataset.
 - `tests/test_v255_production_parity.py` and CPU-only GitHub Actions catch missing rows, missing shells, duplicated or leaked prompts, altered output and bundle format regressions.
 - Original human review remains **pending** for every synthetic training/heldout example. Do not imply authoring is human sign-off or evaluation success.
