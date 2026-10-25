@@ -47,6 +47,33 @@ class NextGPUCurriculumTests(unittest.TestCase):
         self.assertIn("executive", SYSTEM_PROMPTS)
         self.assertNotIn("core", shells)  # Core is an entitlement, not a signed shell.
 
+    def test_cross_domain_v254_has_review_pending_origins_and_32_distinct_tasks(self):
+        rows = [row for row in self.rows if row.get("source") == "cross_domain_v254"]
+        self.assertEqual(len(rows), 32)
+        self.assertEqual(len({row["user"] for row in rows}), 32)
+        self.assertTrue({"body", "grocery", "home", "family", "creation", "recovery", "local", "systems"}
+                        .issubset({row["package"].removeprefix("ngpu_cross_") for row in rows}))
+        self.assertTrue({"ap", "lifeos", "executive", "sprout", "nexus_home", "nexus_family"}
+                        .issubset({row["shell"] for row in rows}))
+        for row in rows:
+            self.assertEqual(row["source_kind"], "ai_authored_synthetic")
+            self.assertEqual(row["review_status"], "pending_human_review")
+            self.assertIn("cross_domain_v254", row["tags"])
+        self.assertEqual(self.manifest["package_counts"]["ngpu_cross_body"], 4)
+
+    def test_cross_domain_independent_holdout_never_enters_training(self):
+        heldout_file = SOURCES["cross_domain_v254_heldout"]
+        evaluations = [json.loads(line) for line in heldout_file.read_text().splitlines() if line.strip()]
+        self.assertEqual(len(evaluations), 12)
+        train_prompts = {normalize(item["user"]) for item in self.rows}
+        for item in evaluations:
+            self.assertTrue(item["must_not_train"])
+            self.assertEqual(item["review_status"], "independent_eval_only")
+            self.assertNotIn(normalize(item["user"]), train_prompts)
+            self.assertNotIn("assistant", item)
+        self.assertIn("cross_domain_v254", self.manifest["source_sha256"])
+        self.assertIn("cross_domain_v254_heldout", self.manifest["source_sha256"])
+
     def test_training_output_is_deterministic(self):
         rows, manifest = build()
         self.assertEqual(rows, self.rows)
