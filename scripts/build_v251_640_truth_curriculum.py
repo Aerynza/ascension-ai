@@ -12,11 +12,14 @@ import argparse
 import hashlib
 import json
 import re
+import sys
 from pathlib import Path
 
-from scripts.build_per_capability_gates import parse_table, CATEGORY_TO_SHELL
-
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from scripts.build_per_capability_gates import parse_table, CATEGORY_TO_SHELL
 CATALOG = ROOT / "docs/CAPABILITIES_REFERENCE.md"
 CURATED = ROOT / "evals/training/aerynza_v251_generalist_seed.jsonl"
 HELDOUT = ROOT / "evals/training/aerynza_v251_independent_heldout.jsonl"
