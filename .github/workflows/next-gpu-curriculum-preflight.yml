@@ -24,6 +24,7 @@ on:
       - 'tests/test_aerynza_repair_stage.py'
       - 'scripts/launch_v251_foundation.sh'
       - 'training_packs/next_gpu/**'
+      - 'tests/test_v255_production_parity.py'
       - 'evals/training/aerynza_v25*'
       - 'tests/test_next_gpu_packs.py'
       - 'tests/test_aerynza_checkpoint_resume.py'
@@ -60,6 +61,8 @@ jobs:
         run: |
           python3 -m unittest discover -s tests -p 'test_v253_640_execution_map.py' -v
           python3 scripts/build_v253_640_execution_map.py --output /tmp/aerynza_640_execution_map.json
+      - name: Validate v255 production-parity training versus independent heldout
+        run: python3 -m unittest discover -s tests -p 'test_v255_production_parity.py' -v
       - name: Compile GPU curriculum without running a model
         run: |
           python3 scripts/build_next_gpu_packs.py --dry-run
