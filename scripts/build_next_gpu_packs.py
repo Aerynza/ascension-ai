@@ -19,6 +19,8 @@ SOURCES = {
     "depth640": ROOT / "evals/training/aerynza_product_v236_natural_action_correction.jsonl",
     "catalog": ROOT / "evals/capability_status.json",
     "seed": ROOT / "training_packs/next_gpu/seed_scenarios.jsonl",
+    "cross_domain_v254": ROOT / "training_packs/next_gpu/cross_domain_v254.jsonl",
+    "cross_domain_v254_heldout": ROOT / "training_packs/next_gpu/cross_domain_v254_heldout.jsonl",
 }
 SUPPORTED = {"ap", "lifeos", "sprout", "nexus_home", "nexus_family", "executive"}
 SHELL_ALIASES = {"core": "ap", "creation": "ap"}
@@ -72,6 +74,9 @@ def heldout_set() -> set[str]:
         for record in cases:
             if isinstance(record, dict):
                 prompts.add(normalize(record.get("user") or record.get("prompt") or ""))
+    # Independent v254 single-request execution tests never enter the training mix.
+    for record in read_jsonl(SOURCES["cross_domain_v254_heldout"]):
+        prompts.add(normalize(record.get("user") or ""))
     for file in sorted((ROOT / "evals/training").glob("*heldout*.jsonl")):
         for record in read_jsonl(file):
             prompts.add(normalize(record.get("user") or record.get("prompt") or ""))
@@ -195,6 +200,14 @@ def build() -> tuple[list[dict], dict]:
     for row in read_jsonl(SOURCES["seed"]):
         if not add(row, "next_gpu_seed_scenarios"):
             raise ValueError(f"Canonical scenario invalid: {row.get('id')}")
+
+    # Cross-domain v254 teaches complete *planning and verification logic*.
+    # The independent heldout file is hashed, scanned and never used as targets.
+    for row in read_jsonl(SOURCES["cross_domain_v254"]):
+        if row.get("review_status") != "pending_human_review" or row.get("source_kind") != "ai_authored_synthetic":
+            raise ValueError(f"Cross-domain sample lacks explicit provenance: {row.get('id')}")
+        if not add(row, "cross_domain_v254"):
+            raise ValueError(f"Cross-domain scenario excluded or duplicated: {row.get('id')}")
     output.sort(key=lambda r: (r["package"], r["id"]))
     if len(output) < MIN_ROWS or capability_coverage != set(known):
         raise ValueError("Training package too small or missing catalog coverage")
@@ -202,7 +215,7 @@ def build() -> tuple[list[dict], dict]:
     counts = Counter(r["package"] for r in output)
     shells = Counter(r["shell"] for r in output)
     manifest = {
-        "version": "next_gpu_2026_10_v1",
+        "version": "next_gpu_2026_10_v2_cross_domain",
         "purpose": "GPU-ready curriculum; no training or provider execution performed",
         "base_model": "Qwen/Qwen3-1.7B",
         "base_model_revision": "70d244cc86ccca08cf5af4e1e306ecf908b1ad5e",
