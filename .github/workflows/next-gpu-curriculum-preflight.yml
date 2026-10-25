@@ -10,6 +10,8 @@ on:
       - 'scripts/train_qwen_ascension_lora.py'
       - 'scripts/aerynza_checkpoint_resume.py'
       - 'scripts/aerynza_training_optimizer.py'
+      - 'scripts/build_v253_640_execution_map.py'
+      - 'tests/test_v253_640_execution_map.py'
       - 'scripts/create_aerynza_repair_approval.py'
       - 'scripts/run_aerynza_repair_stage.py'
       - 'tests/test_aerynza_training_optimizer.py'
@@ -46,6 +48,10 @@ jobs:
         run: |
           python3 -m unittest discover -s tests -p 'test_aerynza_training_optimizer.py' -v
           python3 -m unittest discover -s tests -p 'test_aerynza_repair_stage.py' -v
+      - name: Verify the 640-capability executable evidence matrix (not training labels)
+        run: |
+          python3 -m unittest discover -s tests -p 'test_v253_640_execution_map.py' -v
+          python3 scripts/build_v253_640_execution_map.py --output /tmp/aerynza_640_execution_map.json
       - name: Compile GPU curriculum without running a model
         run: |
           python3 scripts/build_next_gpu_packs.py --dry-run
@@ -65,5 +71,6 @@ jobs:
         run: |
           python3 -m py_compile scripts/build_next_gpu_packs.py scripts/train_qwen_ascension_lora.py scripts/aerynza_checkpoint_resume.py
           python3 -m py_compile scripts/aerynza_training_optimizer.py scripts/create_aerynza_repair_approval.py scripts/run_aerynza_repair_stage.py
+          python3 -m py_compile scripts/build_v253_640_execution_map.py
           bash -n scripts/launch_v251_foundation.sh
           bash -n scripts/launch_next_gpu_candidate.sh
