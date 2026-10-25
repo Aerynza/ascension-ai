@@ -9,6 +9,11 @@ on:
       - 'scripts/build_next_gpu_packs.py'
       - 'scripts/train_qwen_ascension_lora.py'
       - 'scripts/aerynza_checkpoint_resume.py'
+      - 'scripts/aerynza_training_optimizer.py'
+      - 'scripts/create_aerynza_repair_approval.py'
+      - 'scripts/run_aerynza_repair_stage.py'
+      - 'tests/test_aerynza_training_optimizer.py'
+      - 'tests/test_aerynza_repair_stage.py'
       - 'scripts/launch_v251_foundation.sh'
       - 'training_packs/next_gpu/**'
       - 'evals/training/aerynza_v25*'
@@ -37,6 +42,10 @@ jobs:
         run: python3 -m unittest discover -s tests -p 'test_aerynza_checkpoint_resume.py' -v
       - name: Validate 640-capability curriculum coverage and no heldout leakage
         run: python3 -m unittest discover -s tests -p 'test_next_gpu_packs.py' -v
+      - name: Prove that gate-failure optimizer and independent repair approval fail closed
+        run: |
+          python3 -m unittest discover -s tests -p 'test_aerynza_training_optimizer.py' -v
+          python3 -m unittest discover -s tests -p 'test_aerynza_repair_stage.py' -v
       - name: Compile GPU curriculum without running a model
         run: |
           python3 scripts/build_next_gpu_packs.py --dry-run
@@ -55,5 +64,6 @@ jobs:
       - name: Python syntax and shell syntax
         run: |
           python3 -m py_compile scripts/build_next_gpu_packs.py scripts/train_qwen_ascension_lora.py scripts/aerynza_checkpoint_resume.py
+          python3 -m py_compile scripts/aerynza_training_optimizer.py scripts/create_aerynza_repair_approval.py scripts/run_aerynza_repair_stage.py
           bash -n scripts/launch_v251_foundation.sh
           bash -n scripts/launch_next_gpu_candidate.sh
