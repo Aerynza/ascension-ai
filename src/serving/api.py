@@ -6,7 +6,6 @@ import asyncio
 import hashlib
 import hmac
 import json
-import keyring
 import os
 import secrets
 import time
@@ -1139,6 +1138,10 @@ async def login(request: LoginRequest) -> dict:
     """Local desktop login is unavailable in production service mode."""
     if _auth_mode() != "development":
         raise HTTPException(status_code=404, detail="Not found")
+    try:
+        import keyring
+    except ImportError as error:
+        raise HTTPException(status_code=503, detail="Desktop credential storage is unavailable") from error
     stored = keyring.get_password(KEYRING_SERVICE, request.email)
     if not stored or not hmac.compare_digest(stored, request.password):
         raise HTTPException(status_code=401, detail="Invalid email or password.")
