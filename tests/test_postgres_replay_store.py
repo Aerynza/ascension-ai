@@ -33,7 +33,11 @@ class FakePostgres:
                 return self
 
             def __exit__(self, exc_type, exc, tb):
-                outer.closed += 1
+                # This fake returns itself as both cursor and connection;
+                # count the physical connection close only once.
+                if not getattr(self, "_closed", False):
+                    outer.closed += 1
+                    self._closed = True
 
             def cursor(self):
                 return self
