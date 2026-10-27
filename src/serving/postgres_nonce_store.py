@@ -52,6 +52,26 @@ class PostgresNonceStore:
         self._count = 0
         self._lock = threading.Lock()
 
+    def preflight(self) -> None:
+        """Require an accessible, RLS-bound least-privilege replay writer."""
+        if self._connector is None:
+            import psycopg
+            connector = psycopg.connect
+        else:
+            connector = self._connector
+        with connector(self._database_url, connect_timeout=3, sslmode="require") as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT NOT (r.rolsuper OR r.rolbypassrls OR r.rolcreaterole),
+                           has_schema_privilege(current_user, 'aerynza_ai_security', 'USAGE'),
+                           has_table_privilege(current_user, 'aerynza_ai_security.signed_request_nonces', 'INSERT'),
+                           has_table_privilege(current_user, 'aerynza_ai_security.signed_request_nonces', 'SELECT')
+                    FROM pg_roles r WHERE r.rolname = current_user
+                """)
+                permissions = cur.fetchone()
+                if not permissions or not all(permissions):
+                    raise RuntimeError("Replay database role is not properly isolated")
+
     def claim(self, key: str, ttl_seconds: int) -> bool:
         if not isinstance(key, str) or not key.startswith("aerynza:envelope:") or len(key) > 512:
             raise ValueError("Invalid replay nonce key")
