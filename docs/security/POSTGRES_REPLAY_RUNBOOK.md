@@ -25,13 +25,16 @@ with schema USAGE and select/insert/delete permissions restricted to the
 private ledger under RLS. It intentionally does **not** create a stored
 password or a broadly privileged AI credential.
 
-Using an administrator connection in the Supabase SQL editor, create a
-distinct LOGIN role with a freshly generated, strong, private password:
+The AerynzaLife migration `202610270002_ai_signed_replay_login_holder.js`
+now creates the dedicated `aerynza_ai_replay_login` role as **NOLOGIN**
+and grants only replay-writer membership. This is deliberately inert until
+a release operator supplies a fresh strong secret from an approved secret
+manager. After confirming the exact Supabase pooler host from Connect,
+activate the existing role using an administrator connection:
 
 ```sql
-CREATE ROLE aerynza_ai_replay_login
+ALTER ROLE aerynza_ai_replay_login
   LOGIN PASSWORD '<new random secret from your password manager>';
-GRANT aerynza_ai_replay_writer TO aerynza_ai_replay_login;
 ```
 
 Do not execute this example with the literal placeholder. Do not grant
