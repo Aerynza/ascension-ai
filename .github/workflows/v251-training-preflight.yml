@@ -4,11 +4,22 @@ on:
   pull_request:
     paths:
       - 'evals/training/aerynza_v251_foundation_*.jsonl'
+      - 'evals/training/aerynza_v252_execution_*'
       - 'scripts/*v251*'
       - 'scripts/*v252*'
-      - 'evals/training/aerynza_v252_execution_*'
-      - 'tests/test_v252_training_packages.py'
+      - 'scripts/aerynza_checkpoint_resume.py'
+      - 'scripts/train_qwen_ascension_lora.py'
+      - 'scripts/aerynza_training_optimizer.py'
+      - 'scripts/run_aerynza_repair_stage.py'
+      - 'scripts/create_aerynza_repair_approval.py'
+      - 'scripts/run_v20_pipeline.py'
       - 'tests/test_v251_training_packages.py'
+      - 'tests/test_v252_training_packages.py'
+      - 'tests/test_aerynza_checkpoint_resume.py'
+      - 'tests/test_aerynza_training_optimizer.py'
+      - 'tests/test_aerynza_repair_stage.py'
+      - 'docs/training/AERYNZA_RESUMABLE_TRAINING.md'
+      - 'docs/training/AERYNZA_GATE_FAILURE_OPTIMIZER.md'
       - '.github/workflows/v251-training-preflight.yml'
   push:
     branches:
@@ -52,5 +63,15 @@ jobs:
           python3 scripts/validate_v252_packages.py
           python3 -m unittest discover -s tests -p 'test_v252_training_packages.py' -v
           python3 scripts/train_qwen_ascension_lora.py --curriculum evals/training/aerynza_v252_execution_train.jsonl --output-dir checkpoints/v252_preflight_only --validate-only
+      - name: Verify checkpoint recovery rules (no GPU)
+        run: python3 -m unittest discover -s tests -p 'test_aerynza_checkpoint_resume.py' -v
+      - name: Check trainer syntax
+        run: python3 -m py_compile scripts/train_qwen_ascension_lora.py scripts/aerynza_checkpoint_resume.py
+      - name: Verify optimizer and review safeguards (CPU only)
+        run: |
+          python3 -m unittest discover -s tests -p 'test_aerynza_training_optimizer.py' -v
+          python3 -m unittest discover -s tests -p 'test_aerynza_repair_stage.py' -v
+      - name: Check optimizer syntax
+        run: python3 -m py_compile scripts/aerynza_training_optimizer.py scripts/run_aerynza_repair_stage.py scripts/create_aerynza_repair_approval.py scripts/run_v20_pipeline.py
       - name: Shell syntax
         run: bash -n scripts/launch_v251_foundation.sh

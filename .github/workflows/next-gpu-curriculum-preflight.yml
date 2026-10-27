@@ -1,0 +1,92 @@
+name: Next-GPU closed-system curriculum preflight
+
+on:
+  push:
+    branches:
+      - codex/aerynza-gpu-readiness-integrated
+  pull_request:
+    paths:
+      - 'scripts/build_next_gpu_packs.py'
+      - 'scripts/train_qwen_ascension_lora.py'
+      - 'scripts/aerynza_checkpoint_resume.py'
+      - 'scripts/aerynza_training_optimizer.py'
+      - 'scripts/build_v253_640_execution_map.py'
+      - 'scripts/validate_v253_packages.py'
+      - 'scripts/build_v253_gpu_mix.py'
+      - 'evals/training/aerynza_v253_*.jsonl'
+      - 'evals/benchmarks/aerynza_v253_independent_tasks.json'
+      - 'training/v253/**'
+      - 'tests/test_v253_training_packages.py'
+      - 'tests/test_v253_640_execution_map.py'
+      - 'scripts/create_aerynza_repair_approval.py'
+      - 'scripts/run_aerynza_repair_stage.py'
+      - 'tests/test_aerynza_training_optimizer.py'
+      - 'tests/test_aerynza_repair_stage.py'
+      - 'scripts/launch_v251_foundation.sh'
+      - 'training_packs/next_gpu/**'
+      - 'tests/test_v255_production_parity.py'
+      - 'scripts/build_v255_independent_eval.py'
+      - 'evals/training/aerynza_v25*'
+      - 'tests/test_next_gpu_packs.py'
+      - 'tests/test_aerynza_checkpoint_resume.py'
+      - '.github/workflows/next-gpu-curriculum-preflight.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cpu-preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Validate v251 foundation and v252 execution datasets
+        run: |
+          python3 scripts/validate_v251_packages.py
+          python3 scripts/validate_v252_packages.py
+          python3 scripts/validate_v253_packages.py
+          python3 -m unittest discover -s tests -p 'test_v253_training_packages.py' -v
+      - name: Validate optimizer/RNG resume contract without GPU
+        run: python3 -m unittest discover -s tests -p 'test_aerynza_checkpoint_resume.py' -v
+      - name: Validate 640-capability curriculum coverage and no heldout leakage
+        run: python3 -m unittest discover -s tests -p 'test_next_gpu_packs.py' -v
+      - name: Prove that gate-failure optimizer and independent repair approval fail closed
+        run: |
+          python3 -m unittest discover -s tests -p 'test_aerynza_training_optimizer.py' -v
+          python3 -m unittest discover -s tests -p 'test_aerynza_repair_stage.py' -v
+      - name: Verify the 640-capability executable evidence matrix (not training labels)
+        run: |
+          python3 -m unittest discover -s tests -p 'test_v253_640_execution_map.py' -v
+          python3 scripts/build_v253_640_execution_map.py --output /tmp/aerynza_640_execution_map.json
+      - name: Validate v255 production-parity training versus independent heldout
+        run: python3 -m unittest discover -s tests -p 'test_v255_production_parity.py' -v
+      - name: Compile independent v251-v255 heldout eval and enforce disjoint prompt sets
+        run: |
+          python3 -m scripts.build_v255_independent_eval --validate-only
+          python3 -m scripts.build_v255_independent_eval
+      - name: Compile GPU curriculum without running a model
+        run: |
+          python3 scripts/build_next_gpu_packs.py --dry-run
+          python3 scripts/build_next_gpu_packs.py --output training_packs/next_gpu/generated_ci
+      - name: Verify compiled bundle hashes and no unreviewed approval
+        run: |
+          python3 scripts/verify_next_gpu_bundle.py --bundle training_packs/next_gpu/generated_ci
+          python3 -m py_compile scripts/verify_next_gpu_bundle.py
+      - name: Validate LoRA loader on generated data without GPU
+        run: |
+          python3 scripts/train_qwen_ascension_lora.py \
+            --curriculum 'training_packs/next_gpu/generated_ci/*.jsonl' \
+            --eval-curriculum training_packs/next_gpu/evaluation/v255_independent_union.jsonl \
+            --output-dir checkpoints/next_gpu_preflight_only \
+            --validate-only
+      - name: Python syntax and shell syntax
+        run: |
+          python3 -m py_compile scripts/build_next_gpu_packs.py scripts/train_qwen_ascension_lora.py scripts/aerynza_checkpoint_resume.py
+          python3 -m py_compile scripts/aerynza_training_optimizer.py scripts/create_aerynza_repair_approval.py scripts/run_aerynza_repair_stage.py
+          python3 -m py_compile scripts/build_v253_640_execution_map.py
+          bash -n scripts/launch_v251_foundation.sh
+          bash -n scripts/launch_next_gpu_candidate.sh
