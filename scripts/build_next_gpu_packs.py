@@ -21,6 +21,8 @@ SOURCES = {
     "seed": ROOT / "training_packs/next_gpu/seed_scenarios.jsonl",
     "cross_domain_v254": ROOT / "training_packs/next_gpu/cross_domain_v254.jsonl",
     "cross_domain_v254_heldout": ROOT / "training_packs/next_gpu/cross_domain_v254_heldout.jsonl",
+    "v255_parity_train": ROOT / "training_packs/next_gpu/v255_production_parity.jsonl",
+    "v255_parity_heldout": ROOT / "training_packs/next_gpu/v255_production_parity_heldout.jsonl",
     "v253_reasoning": ROOT / "evals/training/aerynza_v253_reasoning_execution_train.jsonl",
     "v253_ambient": ROOT / "evals/training/aerynza_v253_ambient_sovereignty_train.jsonl",
     "v253_heldout": ROOT / "evals/training/aerynza_v253_independent_heldout.jsonl",
@@ -80,6 +82,8 @@ def heldout_set() -> set[str]:
                 prompts.add(normalize(record.get("user") or record.get("prompt") or record.get("task") or ""))
     # Independent v254 single-request execution tests never enter the training mix.
     for record in read_jsonl(SOURCES["cross_domain_v254_heldout"]):
+        prompts.add(normalize(record.get("user") or ""))
+    for record in read_jsonl(SOURCES["v255_parity_heldout"]):
         prompts.add(normalize(record.get("user") or ""))
     for item in json.loads(SOURCES["v253_benchmarks"].read_text(encoding="utf-8")).get("cases", []):
         prompts.add(normalize(item.get("task") or ""))
@@ -223,6 +227,13 @@ def build() -> tuple[list[dict], dict]:
             raise ValueError(f"Cross-domain sample lacks explicit provenance: {row.get('id')}")
         if not add(row, "cross_domain_v254"):
             raise ValueError(f"Cross-domain scenario excluded or duplicated: {row.get('id')}")
+    # V255: practical cross-domain execution, reasoned output and privacy.
+    # Entire independent v255 heldout remains outside optimizer targets.
+    for row in read_jsonl(SOURCES["v255_parity_train"]):
+        if row.get("review_status") != "pending_human_review" or row.get("source_kind") != "ai_authored_synthetic":
+            raise ValueError(f"v255 sample lacks explicit provenance: {row.get('id')}")
+        if not add(row, "v255_production_parity"):
+            raise ValueError(f"v255 scenario excluded or duplicated: {row.get('id')}")
     output.sort(key=lambda r: (r["package"], r["id"]))
     if len(output) < MIN_ROWS or capability_coverage != set(known):
         raise ValueError("Training package too small or missing catalog coverage")

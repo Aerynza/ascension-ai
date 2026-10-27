@@ -6,7 +6,7 @@ cd "$(dirname "$0")/.."
 
 BUNDLE="training_packs/next_gpu/generated"
 CURRICULUM="$BUNDLE/*.jsonl"
-EVAL="evals/training/aerynza_v251_foundation_heldout.jsonl"
+EVAL="training_packs/next_gpu/evaluation/v255_independent_union.jsonl"
 OUTPUT="${AERYNZA_NEXT_GPU_OUTPUT_DIR:-checkpoints/aerynza_next_gpu_candidate}"
 MODEL="Qwen/Qwen3-1.7B"
 REVISION="70d244cc86ccca08cf5af4e1e306ecf908b1ad5e"
@@ -19,6 +19,7 @@ if [[ ! -f "$BUNDLE/manifest.json" ]]; then
   python3 scripts/build_next_gpu_packs.py --output "$BUNDLE"
 fi
 python3 scripts/verify_next_gpu_bundle.py --bundle "$BUNDLE"
+python3 -m scripts.build_v255_independent_eval --output "$EVAL"
 python3 scripts/train_qwen_ascension_lora.py \
   --model "$MODEL" --model-revision "$REVISION" \
   --curriculum "$CURRICULUM" --eval-curriculum "$EVAL" \
