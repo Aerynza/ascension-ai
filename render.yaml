@@ -1,26 +1,32 @@
+# Free 512 MB service. The starter GGUF is about 84 MiB. The RAM budget is
+# 256 MiB so a 1.7 GB profile such as pro_v231 refuses to boot on this plan.
 services:
   - type: web
     name: ascension-ai
     env: python
-    plan: pro
+    plan: free
     buildCommand: pip install -r requirements.txt && python scripts/download_model.py
     startCommand: uvicorn src.serving.api:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     envVars:
-      - key: ASCENSION_AI_TEST_TOKEN
-        generateValue: true
       - key: ASCENSION_AI_SERVICE_TOKEN
         generateValue: true
+      - key: ASCENSION_AI_AUTH_MODE
+        value: production
       - key: ASCENSION_MODEL_PROFILE
-        value: pro_v231
-      - key: ASCENSION_MODEL_BATCH
-        value: "64"
+        value: starter
       - key: ASCENSION_MODEL_CONTEXT
-        value: "4096"
+        value: "768"
+      - key: ASCENSION_MODEL_BATCH
+        value: "16"
       - key: ASCENSION_MODEL_THREADS
-        value: "2"
+        value: "1"
       - key: ASCENSION_MODEL_THREADS_BATCH
-        value: "2"
+        value: "1"
+      - key: AERYNZA_AI_RAM_BUDGET_BYTES
+        value: "268435456"
+      - key: ASCENSION_AI_RAM_BUDGET_BYTES
+        value: "268435456"
       - key: WEB_CONCURRENCY
         value: "1"
       - key: ASCENSION_AI_ALLOWED_ORIGINS
