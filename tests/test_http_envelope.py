@@ -402,10 +402,16 @@ async def test_legacy_generate_denied_even_with_valid_signed_request(signing):
 
 
 @pytest.mark.asyncio
-async def test_core_tier_cannot_authenticate_as_shell(signing, monkeypatch):
-    monkeypatch.setenv("ASCENSION_AI_SERVICE_SHELLS", "ap,core")
+@pytest.mark.parametrize("invalid_shell", ["core", "creation"])
+async def test_tier_and_workspace_cannot_authenticate_as_signed_shell(signing, monkeypatch, invalid_shell):
+    # Even if an operator accidentally includes a non-shell in the configured
+    # allowlist, it must not become a trusted user/workspace identity.
+    monkeypatch.setenv("ASCENSION_AI_SERVICE_SHELLS", "ap,core,creation")
     body = {"text": "private"}
-    headers = auth_headers(body, signing, nonce="core-not-shell", shell="core", path="/v1/memory/candidates")
+    headers = auth_headers(
+        body, signing, nonce=invalid_shell + "-not-shell",
+        shell=invalid_shell, path="/v1/memory/candidates"
+    )
     transport = httpx.ASGITransport(app=api.app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post("/v1/memory/candidates", json=body, headers=headers)
