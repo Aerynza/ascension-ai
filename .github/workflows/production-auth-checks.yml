@@ -27,5 +27,5 @@ jobs:
           python -m scripts.train_qwen_ascension_lora --curriculum evals/training/aerynza_v251_640_balanced.jsonl --eval-curriculum evals/training/aerynza_v251_independent_heldout.jsonl --validate-only
           python -m unittest -v scripts.test_v251_training_preflight
       - name: Run security regression suite
-        run: python -m pytest -q tests/test_production_auth.py tests/test_thesis_shell_isolation.py tests/test_request_integrity.py tests/test_envelope_signature.py tests/test_replay_guard.py tests/test_http_envelope.py tests/test_node_interop_vector.py tests/test_canonicalization_contract.py tests/test_native_admission_contract.py tests/test_release_gate.py
+        run: python -m pytest -q tests/test_production_auth.py tests/test_thesis_shell_isolation.py tests/test_request_integrity.py tests/test_envelope_signature.py tests/test_replay_guard.py tests/test_postgres_replay_store.py tests/test_http_envelope.py tests/test_node_interop_vector.py tests/test_canonicalization_contract.py tests/test_native_admission_contract.py tests/test_release_gate.py
 
