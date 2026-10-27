@@ -211,9 +211,10 @@ async def signed_request_boundary(request, call_next):
         declared_shell = payload.get("shell")
         if declared_shell is not None and declared_shell != identity["shell"]:
             raise InvalidEnvelope("Shell identity mismatch")
-        # Core is an entitlement tier, not a production caller/shell identity.
-        if identity["shell"] == "core":
-            raise InvalidEnvelope("Core is a tier, not an AI shell")
+        # Core is an entitlement tier; Creation is an AP workspace.
+        # Neither is an independent authenticated production shell.
+        if identity["shell"] in {"core", "creation"}:
+            raise InvalidEnvelope("Tier or workspace is not an AI shell")
         if identity["shell"] not in _authorized_shells():
             raise InvalidEnvelope("Signed shell not authorized for this service")
         # Memory extraction is personal AP work, never a family, home, or child shell operation.
