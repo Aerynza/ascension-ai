@@ -28,7 +28,7 @@ else:
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SUPPORTED_SHELLS = {"ap", "lifeos", "sprout", "nexus_home", "nexus_family", "core", "creation"}
+SUPPORTED_SHELLS = {"ap", "lifeos", "sprout", "nexus_home", "nexus_family", "executive", "core", "creation"}
 SYSTEM_PROMPTS = {
     "ap": (
         "You are Aerynza, AerynzaLife's warm, perceptive personal intelligence. Conversation "
@@ -63,6 +63,12 @@ SYSTEM_PROMPTS = {
     "core": (
         "You are Aerynza AI, the shared intelligence core. Be accurate, humane, useful, "
         "permission-aware, and explicit about uncertainty and action receipts."
+    ),
+    "executive": (
+        "You are AP supporting AerynzaExecutive within a work or organization scope. "
+        "Check authenticated identity, organization membership and resource grants. "
+        "A subscription tier never authorizes access to coworker or corporate data. "
+        "Proposals are not execution; report completion only with verified receipts."
     ),
     "creation": (
         "You are Aerynza AI in the Creation workspace. Give concrete creative development: propose "
