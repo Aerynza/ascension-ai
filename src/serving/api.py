@@ -267,7 +267,7 @@ class IntelligenceRequest(BaseModel):
     temperature: float = Field(default=0.65, ge=0.0, le=1.2)
     max_tokens: int = Field(default=500, ge=32, le=1600)
     session_id: str = Field(default="", max_length=120)
-    persist_context: bool = True
+    persist_context: bool = False
 
     @field_validator("messages")
     @classmethod
@@ -381,6 +381,8 @@ class ActionReceiptRequest(BaseModel):
 
 
 def _auth_mode() -> str:
+    if os.getenv("RENDER", "").strip().lower() == "true":
+        return "production"
     mode = os.getenv("AERYNZA_AI_AUTH_MODE", os.getenv("ASCENSION_AI_AUTH_MODE", "production")).strip().lower()
     if mode not in {"production", "development"}:
         raise RuntimeError("ASCENSION_AI_AUTH_MODE must be production or development")
@@ -393,14 +395,19 @@ def _authorized_token(authorization: str | None) -> bool:
     supplied = authorization[7:].strip()
     if not supplied:
         return False
-    service_token = os.getenv("ASCENSION_AI_SERVICE_TOKEN", "").strip()
-    if service_token and hmac.compare_digest(supplied, service_token):
+    service_tokens = [os.getenv(name, "").strip() for name in (
+        "ASCENSION_AI_SERVICE_TOKEN", "AERYNZA_AI_SERVICE_TOKEN"
+    )]
+    supplied_digest = hashlib.sha256(supplied.encode("utf-8")).digest()
+    if any(token and hmac.compare_digest(supplied_digest, hashlib.sha256(token.encode("utf-8")).digest()) for token in service_tokens):
         return True
     if _auth_mode() == "development":
         if supplied in SESSIONS:
             return True
+        if os.getenv("ASCENSION_AI_ALLOW_TEST_TOKEN", "").strip().lower() != "true":
+            return False
         test_token = os.getenv("ASCENSION_AI_TEST_TOKEN", "").strip()
-        return bool(test_token and hmac.compare_digest(supplied, test_token))
+        return bool(test_token and hmac.compare_digest(supplied_digest, hashlib.sha256(test_token.encode("utf-8")).digest()))
     return False
 
 
@@ -440,8 +447,8 @@ def validate_auth_configuration() -> None:
 
 def require_certified_action_gateway() -> None:
     """Fail closed until production action authorization and receipts are certified."""
-    if _auth_mode() == "production":
-        raise HTTPException(status_code=403, detail="Direct device execution disabled in production")
+    if _auth_mode() == "production" or os.getenv("AERYNZA_AI_ENABLE_DEVICE_ROUTES", "").strip().lower() != "true":
+        raise HTTPException(status_code=403, detail="Direct device execution requires a verified development enablement")
 
 
 def require_native_ready() -> None:
@@ -1114,6 +1121,8 @@ class MediaRequest(BaseModel):
 @app.post("/v1/media/generate")
 async def media_generate(request: MediaRequest, _: None = Depends(require_access)) -> dict:
     """Generate media through the configured outside provider. DALL-E 3 is the first supported provider."""
+    if os.getenv("AERYNZA_AI_ENABLE_PROVIDER_ROUTES", "").strip().lower() != "true":
+        raise HTTPException(status_code=403, detail="Direct provider execution is disabled")
     return await asyncio.to_thread(generate_image, request.prompt, request.context)
 
 
