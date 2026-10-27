@@ -13,13 +13,16 @@ import inspect
 import json
 import os
 import random
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SUPPORTED_SHELLS = {"ap", "lifeos", "sprout", "nexus_home", "nexus_family", "core", "creation"}
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+SUPPORTED_SHELLS = {"ap", "lifeos", "sprout", "nexus_home", "nexus_family", "core", "creation", "executive"}
 SYSTEM_PROMPTS = {
     "ap": (
         "You are Aerynza, AerynzaLife's warm, perceptive personal intelligence. Conversation "
@@ -54,6 +57,11 @@ SYSTEM_PROMPTS = {
     "core": (
         "You are Aerynza AI, the shared intelligence core. Be accurate, humane, useful, "
         "permission-aware, and explicit about uncertainty and action receipts."
+    ),
+    "executive": (
+        "You are AP serving AerynzaExecutive, with organizational authorization separate from personal " 
+        "AP identity and platform-founder control. Work on approved business projects, distinguish " 
+        "drafts from provider actions, and require owner-scoped receipts for any external change."
     ),
     "creation": (
         "You are Aerynza AI in the Creation workspace. Give concrete creative development: propose "
@@ -246,7 +254,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--curriculum", default="evals/training/aerynza_v20_balanced_master.jsonl")
     parser.add_argument("--eval-curriculum", default=None,
                         help="independent held-out JSONL pattern; never used for optimization")
-    parser.add_argument("--resume-adapter", default=None)
+    parser.add_argument("--resume-adapter", default=None,
+                        help="start a NEW curriculum stage from reviewed adapter weights, NOT an interrupted exact resume")
+    parser.add_argument("--resume-checkpoint", default=None,
+                        help="exactly restore model, optimizer, scheduler, RNG and step from this checkpoint")
+    parser.add_argument("--save-steps", type=int, default=10,
+                        help="optimizer steps between durable checkpoints, 1-10000")
     parser.add_argument("--max-length", type=int, default=768)
     parser.add_argument("--epochs", type=float, default=4.0)
     parser.add_argument("--learning-rate", type=float, default=1.0e-4)
@@ -254,6 +267,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--validate-only", action="store_true")
     parser.add_argument("--allow-cpu", action="store_true", help="explicit override for diagnostic training only")
     args = parser.parse_args(argv)
+    if not 1 <= args.save_steps <= 10000:
+        parser.error("--save-steps must be between 1 and 10000")
+
+    from scripts.qwen_resume_contract import contract_payload, prepare_run
 
     records, curriculum = load_curriculum(args.curriculum)
     eval_records = None
@@ -270,8 +287,17 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     output_dir = ROOT / args.output_dir
-    if output_dir.exists() and any(output_dir.iterdir()) and not args.resume_adapter:
-        raise FileExistsError(f"refusing to overwrite non-empty candidate directory: {output_dir}")
+    contract = contract_payload(
+        base_model=args.model, revision=args.model_revision, parent_adapter=args.resume_adapter,
+        curriculum=curriculum, eval_curriculum=eval_curriculum, max_length=args.max_length,
+        epochs=args.epochs, learning_rate=args.learning_rate, seed=args.seed,
+        save_steps=args.save_steps,
+    )
+    resume = prepare_run(
+        output_dir, contract,
+        ROOT / args.resume_checkpoint if args.resume_checkpoint else None,
+    )
+    print(json.dumps({"resume_preflight": resume}), flush=True)
 
     import torch
     from peft import LoraConfig, PeftModel, get_peft_model
@@ -341,7 +367,10 @@ def main(argv: list[str] | None = None) -> int:
         fp16=torch.cuda.is_available() and not cuda_bf16,
         logging_steps=5,
         eval_strategy="epoch",
-        save_strategy="no",
+        save_strategy="steps",
+        save_steps=args.save_steps,
+        save_total_limit=3,
+        save_only_model=False,
         report_to="none",
         remove_unused_columns=False,
         ddp_find_unused_parameters=False,
@@ -359,7 +388,10 @@ def main(argv: list[str] | None = None) -> int:
         eval_dataset=AscensionDataset(eval_rows),
         data_collator=AssistantOnlyCollator(tokenizer.pad_token_id),
     )
-    train_result = trainer.train()
+    train_result = trainer.train(
+        resume_from_checkpoint=str((ROOT / args.resume_checkpoint).resolve())
+        if args.resume_checkpoint else None
+    )
     if trainer.is_world_process_zero():
         model.save_pretrained(output_dir, safe_serialization=True)
         tokenizer.save_pretrained(output_dir)
@@ -369,6 +401,11 @@ def main(argv: list[str] | None = None) -> int:
             "base_model_revision": args.model_revision,
             "adapter_dir": output_dir.relative_to(ROOT).as_posix(),
             "resumed_from_adapter": args.resume_adapter,
+            "resume_checkpoint": args.resume_checkpoint,
+            "resume_mode": resume["mode"],
+            "exact_resume_contract_sha256": resume["contract_sha256"],
+            "completed_global_step": int(trainer.state.global_step),
+            "optimizer_scheduler_rng_checkpointing": True,
             "curriculum": curriculum,
             "eval_curriculum": eval_curriculum,
             "eval_is_independent": eval_curriculum is not None,

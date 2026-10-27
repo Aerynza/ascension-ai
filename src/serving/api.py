@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import keyring
 import os
 import secrets
 import time
@@ -22,9 +23,9 @@ _SESSION_LOCK = Lock()
 MAX_SESSION_CONTEXT_BYTES = 200_000
 
 
-def _session_key(session_id: str, token: str) -> str:
-    """Bind stored context to the verified bearer, not a client-chosen session id alone."""
-    return hashlib.sha256(f"{token}:{session_id}".encode("utf-8")).hexdigest()
+def _session_key(session_id: str, token: str | None) -> str:
+    """Bind a nonproduction session to its verified caller token."""
+    return hashlib.sha256(f"{token or ''}:{session_id}".encode("utf-8")).hexdigest()
 
 
 def _strip_provider_keys(value):
@@ -40,19 +41,23 @@ def _strip_provider_keys(value):
     return value
 
 
-def get_session_context(session_id: str, token: str) -> dict:
-    if not session_id or not token:
+def get_session_context(session_id: str, authorization: str | None) -> dict:
+    if _auth_mode() == "production":
+        raise HTTPException(status_code=403, detail="Shared-token session storage disabled pending caller-bound identity")
+    if not session_id:
         return {}
-    key = _session_key(session_id, token)
+    key = _session_key(session_id, authorization)
     with _SESSION_LOCK:
         return SESSION_CONTEXTS.get(key, {}).copy()
 
 
-def set_session_context(session_id: str, context: dict, token: str, merge: bool = False) -> dict:
-    if not session_id or not token:
-        return _strip_provider_keys(context)
+def set_session_context(session_id: str, context: dict, authorization: str | None, merge: bool = False) -> dict:
+    if _auth_mode() == "production":
+        raise HTTPException(status_code=403, detail="Shared-token session storage disabled pending caller-bound identity")
     safe_context = _strip_provider_keys(context)
-    key = _session_key(session_id, token)
+    if not session_id:
+        return safe_context
+    key = _session_key(session_id, authorization)
     with _SESSION_LOCK:
         existing = SESSION_CONTEXTS.get(key, {}) if merge else {}
         merged = _merge_context(existing, safe_context)
@@ -74,31 +79,34 @@ def _merge_context(existing: dict, new: dict) -> dict:
     return result
 
 
-def resolve_session_context(request, token: str) -> dict:
-    """Merge persisted session context with request context; persist only when asked."""
+def resolve_session_context(request, authorization: str | None) -> dict:
+    """Merge persisted session context with request context; persist the result when asked."""
     if not getattr(request, "session_id", None):
         return request.context
-    stored = get_session_context(request.session_id, token)
+    stored = get_session_context(request.session_id, authorization)
     merged = _merge_context(stored, request.context)
     if getattr(request, "persist_context", False):
-        set_session_context(request.session_id, request.context, token, merge=True)
+        set_session_context(request.session_id, request.context, authorization, merge=True)
     return merged
 
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
+from src.serving.http_envelope import signing_enabled, load_signing_configuration, check_http_envelope, redis_nonce_store
+from src.serving.envelope_validation import InvalidEnvelope
 from src.core.capabilities import CAPABILITIES
 from src.core.action_runtime import shell_action_catalog, shell_allows_action, validate_action_receipt
 from src.core.cognition import TALENTS, build_action_execution_contract, build_cognitive_packet, extract_memory_candidates, hybrid_retrieve
 from src.core.contracts import Shell, Tier
 from src.core.media_executor import generate_image, parse_image_request
 from src.core.model_runtime import ModelRamBudgetExceeded, NativeInferenceQueueTimeout, runtime
+from src.core.release_gate import REQUIRED_GATES, release_status
 from src.financial.plaid_client import get_balances, parse_balance_query
 from src.core.orchestrator import deterministic_response, prepare_inference, respond, scope_context, surface_plan
 from src.core.safety import medical_emergency_response
@@ -112,15 +120,17 @@ PUBLIC = ROOT / "public"
 APP_VERSION = "2.3.2-native-production"
 MAX_MESSAGES = 24
 MAX_MESSAGE_LENGTH = 12_000
-RELEASE_READY_PROFILES = {"pro_v231"}
-
-
+MAX_SIGNED_BODY_BYTES = 1_048_576
 def production_replacement_enabled() -> bool:
-    return runtime.profile_name in RELEASE_READY_PROFILES and bool(runtime.status()["ready"])
+    # A loaded checkpoint alone cannot certify outside-provider replacement.
+    # This remains false without current, model-bound attested evaluation gates
+    # and explicit operator approval.
+    return bool(release_status(runtime.status(), runtime.profile)["replacement_ready"])
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    validate_auth_configuration()
     try:
         await asyncio.to_thread(runtime.load)
     except ModelRamBudgetExceeded:
@@ -137,9 +147,89 @@ app.add_middleware(
     allow_origins=allowed_origins,
     allow_credentials=False,
     allow_methods=["GET", "POST"],
-    allow_headers=["Authorization", "Content-Type"],
+    allow_headers=["Authorization", "Content-Type", "X-Aerynza-Envelope", "X-Aerynza-Signature"],
 )
 app.mount("/static", StaticFiles(directory=str(PUBLIC)), name="static")
+
+
+@app.middleware("http")
+async def signed_request_boundary(request, call_next):
+    """Staged signing enforcement; requires real Redis and matching product signer."""
+    if _auth_mode() != "production" or not signing_enabled():
+        return await call_next(request)
+    if request.url.path in {"/docs", "/redoc", "/openapi.json"}:
+        return JSONResponse(status_code=404, content={"detail": "Not found"})
+    if request.url.query and request.url.path.startswith("/v1/"):
+        return JSONResponse(status_code=400, content={"detail": "Unsigned query parameters are not supported"})
+    protected_get = request.method == "GET" and (
+        request.url.path.startswith("/v1/") or request.url.path == "/model/info"
+    )
+    if request.method not in ("POST", "GET"):
+        return JSONResponse(status_code=405, content={"detail": "Method not allowed"})
+    if request.method == "GET" and not protected_get:
+        return await call_next(request)
+    if not _authorized_token(request.headers.get("authorization")):
+        return JSONResponse(status_code=401, content={"detail": "Authentication required"})
+    try:
+        declared_length = request.headers.get("content-length")
+        if declared_length is not None and (not declared_length.isascii() or not declared_length.isdigit()):
+            return JSONResponse(status_code=400, content={"detail": "Invalid content length"})
+        if declared_length is not None and int(declared_length) > MAX_SIGNED_BODY_BYTES:
+            return JSONResponse(status_code=413, content={"detail": "Request too large"})
+        # Bound accumulation even when Content-Length is absent or understates
+        # a chunked body. Do not drain an oversized stream before rejecting it.
+        chunks = []
+        size = 0
+        async for chunk in request.stream():
+            size += len(chunk)
+            if size > MAX_SIGNED_BODY_BYTES:
+                return JSONResponse(status_code=413, content={"detail": "Request too large"})
+            chunks.append(chunk)
+        body_bytes = b"".join(chunks)
+        # Starlette's cached middleware request replays this bounded body to
+        # downstream JSON validation after signature verification.
+        request._body = body_bytes
+        payload = {} if protected_get and not body_bytes else json.loads(body_bytes)
+        if not isinstance(payload, dict):
+            raise InvalidEnvelope("Expected JSON object body")
+        config = load_signing_configuration()
+        nonce_store = redis_nonce_store(config[2])
+        identity = await asyncio.to_thread(
+            check_http_envelope, request.headers, payload, config=config,
+            nonce_store=nonce_store, method=request.method, path=request.url.path,
+        )
+        # Shell-aware operations must explicitly declare the same shell as the signed envelope.
+        # Otherwise a non-AP signature could reach a handler whose Pydantic default is AP.
+        shell_bound_routes = {
+            "/v1/intelligence", "/v1/stream", "/chat", "/v1/cognition",
+            "/v1/agent/plan", "/v1/retrieve", "/v1/surface-plan",
+            "/v1/relationships/feed", "/v1/session/data-panels",
+            "/v1/thesis", "/v1/thesis/contribution",
+            "/v1/actions/receipt/validate",
+        }
+        if request.url.path in shell_bound_routes and payload.get("shell") != identity["shell"]:
+            raise InvalidEnvelope("Explicit matching shell required")
+        declared_shell = payload.get("shell")
+        if declared_shell is not None and declared_shell != identity["shell"]:
+            raise InvalidEnvelope("Shell identity mismatch")
+        # Core is an entitlement tier, not a production caller/shell identity.
+        if identity["shell"] == "core":
+            raise InvalidEnvelope("Core is a tier, not an AI shell")
+        if identity["shell"] not in _authorized_shells():
+            raise InvalidEnvelope("Signed shell not authorized for this service")
+        # Memory extraction is personal AP work, never a family, home, or child shell operation.
+        if request.url.path == "/v1/memory/candidates" and identity["shell"] != "ap":
+            raise InvalidEnvelope("Memory candidate route requires AP shell")
+        if request.url.path.startswith("/v1/actions/catalog/"):
+            catalog_shell = request.url.path.rsplit("/", 1)[-1]
+            if catalog_shell != identity["shell"]:
+                raise InvalidEnvelope("Catalog shell mismatch")
+        request.state.signed_identity = identity
+    except (InvalidEnvelope, ValueError, TypeError):
+        return JSONResponse(status_code=401, content={"detail": "Invalid signed request"})
+    except Exception:
+        return JSONResponse(status_code=503, content={"detail": "Signed request verification unavailable"})
+    return await call_next(request)
 
 
 @app.middleware("http")
@@ -178,7 +268,7 @@ class IntelligenceRequest(BaseModel):
     temperature: float = Field(default=0.65, ge=0.0, le=1.2)
     max_tokens: int = Field(default=500, ge=32, le=1600)
     session_id: str = Field(default="", max_length=120)
-    persist_context: bool = False
+    persist_context: bool = True
 
     @field_validator("messages")
     @classmethod
@@ -212,7 +302,7 @@ class SurfacePlanRequest(BaseModel):
     available_actions: list[str] = Field(default_factory=list, max_length=100)
     allowed_capabilities: list[str] = Field(default_factory=list, max_length=100)
     session_id: str = Field(default="", max_length=120)
-    persist_context: bool = False
+    persist_context: bool = True
 
 
 class CognitionRequest(SurfacePlanRequest):
@@ -220,17 +310,10 @@ class CognitionRequest(SurfacePlanRequest):
 
 
 class RetrievalRequest(BaseModel):
+    shell: Shell = Shell.AP
     query: str = Field(min_length=1, max_length=MAX_MESSAGE_LENGTH)
     context: dict = Field(default_factory=dict)
-    shell: Shell = Shell.AP
     top_k: int = Field(default=6, ge=1, le=10)
-
-    @field_validator("context")
-    @classmethod
-    def bound_context(cls, value: dict) -> dict:
-        if len(json.dumps(value, default=str)) > 50_000:
-            raise ValueError("context packet is too large")
-        return value
 
 
 class MemoryCandidateRequest(BaseModel):
@@ -259,7 +342,7 @@ class RelationshipFeedRequest(BaseModel):
     context: dict = Field(default_factory=dict)
     surface: str = Field(default="relationship_feed", max_length=100)
     session_id: str = Field(default="", max_length=120)
-    persist_context: bool = False
+    persist_context: bool = True
 
 
 class ThesisRequest(BaseModel):
@@ -298,73 +381,68 @@ class ActionReceiptRequest(BaseModel):
     receipt: dict = Field(default_factory=dict)
 
 
-def _service_tokens() -> list[str]:
-    """Configured bearer secrets. An email address is never a secret."""
-    tokens: list[str] = []
-    for name in ("ASCENSION_AI_SERVICE_TOKEN", "AERYNZA_AI_SERVICE_TOKEN"):
-        value = os.getenv(name, "").strip()
-        if value and value not in tokens:
-            tokens.append(value)
-    return tokens
+def _auth_mode() -> str:
+    mode = os.getenv("AERYNZA_AI_AUTH_MODE", os.getenv("ASCENSION_AI_AUTH_MODE", "production")).strip().lower()
+    if mode not in {"production", "development"}:
+        raise RuntimeError("ASCENSION_AI_AUTH_MODE must be production or development")
+    return mode
 
 
-def _token_matches(supplied: str, expected: str) -> bool:
-    """Constant-time compare that does not throw when the strings differ in length."""
-    if not supplied or not expected:
+def _authorized_token(authorization: str | None) -> bool:
+    if not authorization or not authorization.lower().startswith("bearer "):
         return False
-    return hmac.compare_digest(
-        hashlib.sha256(supplied.encode("utf-8")).digest(),
-        hashlib.sha256(expected.encode("utf-8")).digest(),
-    )
-
-
-def _is_production() -> bool:
-    if os.getenv("RENDER", "").strip().lower() == "true":
+    supplied = authorization[7:].strip()
+    if not supplied:
+        return False
+    service_token = os.getenv("ASCENSION_AI_SERVICE_TOKEN", "").strip()
+    if service_token and hmac.compare_digest(supplied, service_token):
         return True
-    mode = os.getenv("AERYNZA_AI_AUTH_MODE", os.getenv("ASCENSION_AI_AUTH_MODE", "")).strip().lower()
-    if mode == "production":
-        return True
-    env_name = os.getenv("AERYNZA_AI_ENV", os.getenv("ASCENSION_AI_ENV", "")).strip().lower()
-    return env_name in {"production", "prod"}
+    if _auth_mode() == "development":
+        if supplied in SESSIONS:
+            return True
+        test_token = os.getenv("ASCENSION_AI_TEST_TOKEN", "").strip()
+        return bool(test_token and hmac.compare_digest(supplied, test_token))
+    return False
 
 
-def _env_flag(*names: str) -> bool:
-    return any(os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"} for name in names)
+def _authorized_shells() -> set[str]:
+    """Production caller's allowed shell identities, configured server-side."""
+    raw = os.getenv("ASCENSION_AI_SERVICE_SHELLS", "")
+    return {part.strip().lower() for part in raw.split(",") if part.strip()}
 
 
-def device_routes_enabled() -> bool:
-    return _env_flag("AERYNZA_AI_ENABLE_DEVICE_ROUTES", "ASCENSION_AI_ENABLE_DEVICE_ROUTES")
-
-
-def provider_routes_enabled() -> bool:
-    return _env_flag("AERYNZA_AI_ENABLE_PROVIDER_ROUTES", "ASCENSION_AI_ENABLE_PROVIDER_ROUTES")
-
-
-def require_device_routes() -> None:
-    if not device_routes_enabled():
-        raise HTTPException(status_code=403, detail="Device execution is disabled")
-
-
-def require_provider_routes() -> None:
-    if not provider_routes_enabled():
-        raise HTTPException(status_code=403, detail="Provider routes are disabled")
+def enforce_shell_access(shell: Shell) -> None:
+    """Never trust a request body to grant a shell identity."""
+    if _auth_mode() == "development":
+        return
+    if shell.value.lower() not in _authorized_shells():
+        raise HTTPException(status_code=403, detail="Shell not authorized")
 
 
 def require_access(authorization: str | None = Header(default=None)) -> str:
-    """Require a bearer service token. Fail closed when none is configured."""
-    configured = _service_tokens()
-    if not configured:
-        detail = "Service token is not configured for production" if _is_production() else "Service token is not configured"
-        raise HTTPException(status_code=503, detail=detail)
-    supplied = ""
-    if authorization and authorization.lower().startswith("bearer "):
-        supplied = authorization[7:].strip()
-    matched = False
-    for expected in configured:
-        matched = _token_matches(supplied, expected) or matched
-    if not matched:
+    """Require a caller token; never share development sessions across callers."""
+    if _auth_mode() == "development" and os.getenv("ASCENSION_AI_LOCAL_DEV_BYPASS", "").lower() in {"1", "true"}:
+        return 'explicit-local-development-bypass'
+    if not _authorized_token(authorization):
         raise HTTPException(status_code=401, detail="Authentication required")
-    return supplied
+    return authorization[7:].strip()
+
+
+def validate_auth_configuration() -> None:
+    if _auth_mode() == "production":
+        if not signing_enabled():
+            raise RuntimeError("ASCENSION_AI_REQUIRE_SIGNED_REQUESTS=true is required in production")
+        load_signing_configuration()
+        if not os.getenv("ASCENSION_AI_SERVICE_TOKEN", "").strip():
+            raise RuntimeError("ASCENSION_AI_SERVICE_TOKEN is required in production")
+        if not _authorized_shells():
+            raise RuntimeError("ASCENSION_AI_SERVICE_SHELLS is required in production")
+
+
+def require_certified_action_gateway() -> None:
+    """Fail closed until production action authorization and receipts are certified."""
+    if _auth_mode() == "production":
+        raise HTTPException(status_code=403, detail="Direct device execution disabled in production")
 
 
 def require_native_ready() -> None:
@@ -427,27 +505,12 @@ async def health() -> dict:
 
 @app.get("/v1/readiness")
 async def replacement_readiness(_: None = Depends(require_access)) -> dict:
-    required_gates = [
-        "conversation_quality", "shell_isolation", "action_integrity",
-        "domain_reasoning", "safety_privacy", "interactive_latency",
-        "concurrency_recovery", "native_primary_canary",
-    ]
-    ready = production_replacement_enabled()
+    status = release_status(runtime.status(), runtime.profile)
     return {
-        "candidate_ready": runtime.status()["ready"],
-        "replacement_ready": ready,
-        "evaluation_suite": "replacement_readiness_prompts_v1",
-        "evaluation_cases": 20,
-        "required_gates": required_gates,
-        "gates": {gate: ready for gate in required_gates},
-        "evidence": {
-            "raw_capability_execution": "628/640",
-            "canonical": "6/6",
-            "integrated_receipt_truth": "8/8",
-            "replacement_quality": "19/20",
-            "runtime_guards": ["medical_emergency", "release_critical_capabilities"],
-        } if ready else {},
-        "promotion_rule": "Every gate must pass before outside-model fallback is removed.",
+        **status,
+        "evaluation_suite": "aerynza_native_replacement_v1",
+        "required_gates": list(REQUIRED_GATES),
+        "promotion_rule": "A recent signed evaluation for this exact model and explicit operator approval are required before native primary replacement.",
         "runtime": runtime.status(),
     }
 
@@ -485,6 +548,7 @@ async def capabilities(_: None = Depends(require_access)) -> dict:
 
 @app.get("/v1/actions/catalog/{shell}")
 async def actions_catalog(shell: Shell, _: None = Depends(require_access)) -> dict:
+    enforce_shell_access(shell)
     return {
         "shell": shell.value,
         "actions": shell_action_catalog(shell),
@@ -495,6 +559,7 @@ async def actions_catalog(shell: Shell, _: None = Depends(require_access)) -> di
 
 @app.post("/v1/actions/receipt/validate")
 async def action_receipt_validate(request: ActionReceiptRequest, _: None = Depends(require_access)) -> dict:
+    enforce_shell_access(request.shell)
     if not shell_allows_action(request.shell, request.action):
         raise HTTPException(status_code=403, detail=f"{request.shell.value} cannot execute {request.action}")
     action = {"action": request.action, "receipt_fields": request.receipt_fields}
@@ -527,8 +592,9 @@ async def talents(_: None = Depends(require_access)) -> dict:
 
 
 @app.post("/v1/cognition")
-async def cognition(request: CognitionRequest, token: str = Depends(require_access)) -> dict:
-    context = resolve_session_context(request, token)
+async def cognition(request: CognitionRequest, authorization: str | None = Header(default=None), _: None = Depends(require_access)) -> dict:
+    enforce_shell_access(request.shell)
+    context = resolve_session_context(request, authorization)
     scoped_context = scope_context(context, request.shell)
     packet = build_cognitive_packet(
         request.trigger,
@@ -548,13 +614,14 @@ async def cognition(request: CognitionRequest, token: str = Depends(require_acce
 
 
 @app.post("/v1/agent/plan")
-async def agent_plan(request: CognitionRequest, token: str = Depends(require_access)) -> dict:
+async def agent_plan(request: CognitionRequest, access: None = Depends(require_access)) -> dict:
     """Plan but never silently execute; the authenticated product shell owns execution."""
-    return await cognition(request, token)
+    return await cognition(request, access)
 
 
 @app.post("/v1/retrieve")
 async def retrieve(request: RetrievalRequest, _: None = Depends(require_access)) -> dict:
+    enforce_shell_access(request.shell)
     scoped_context = scope_context(request.context, request.shell)
     return {
         "query": request.query,
@@ -574,7 +641,10 @@ async def memory_candidates(request: MemoryCandidateRequest, _: None = Depends(r
 
 
 @app.post("/v1/thesis")
-async def thesis(request: ThesisRequest, _: str = Depends(require_access)) -> dict:
+async def thesis(request: ThesisRequest, _: None = Depends(require_access)) -> dict:
+    enforce_shell_access(request.shell)
+    if _auth_mode() == "production" and request.scope in {"sprout", "home", "family"}:
+        raise HTTPException(status_code=403, detail="Resource ownership verification required for this thesis scope")
     required_shell = {
         "human": {Shell.AP, Shell.LIFE_OS},
         "sprout": {Shell.AP, Shell.LIFE_OS},
@@ -588,15 +658,14 @@ async def thesis(request: ThesisRequest, _: str = Depends(require_access)) -> di
         result = build_thesis(request.scope, request.subject_id, request.context)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return {
-        **result,
-        "shell": request.shell.value,
-        "outside_provider": False,
-    }
+    return {**result, "shell": request.shell.value, "outside_provider": False}
 
 
 @app.post("/v1/thesis/contribution")
-async def thesis_contribution(request: ThesisContributionRequest, _: str = Depends(require_access)) -> dict:
+async def thesis_contribution(request: ThesisContributionRequest, _: None = Depends(require_access)) -> dict:
+    enforce_shell_access(request.shell)
+    if _auth_mode() == "production":
+        raise HTTPException(status_code=403, detail="Member consent and resource ownership verification required")
     if request.shell not in {Shell.AP, Shell.LIFE_OS}:
         raise HTTPException(status_code=403, detail="only the member's AP or LifeOS shell can prepare a thesis contribution")
     try:
@@ -613,8 +682,9 @@ async def thesis_contribution(request: ThesisContributionRequest, _: str = Depen
 
 
 @app.post("/v1/surface-plan")
-async def plan_surfaces(request: SurfacePlanRequest, token: str = Depends(require_access)) -> dict:
-    context = resolve_session_context(request, token)
+async def plan_surfaces(request: SurfacePlanRequest, authorization: str | None = Header(default=None), _: None = Depends(require_access)) -> dict:
+    enforce_shell_access(request.shell)
+    context = resolve_session_context(request, authorization)
     return surface_plan(
         shell=request.shell,
         tier=request.tier,
@@ -626,8 +696,8 @@ async def plan_surfaces(request: SurfacePlanRequest, token: str = Depends(requir
 
 
 @app.post("/v1/session/context")
-async def set_session(request: SessionContextRequest, token: str = Depends(require_access)) -> dict:
-    merged = set_session_context(request.session_id, request.context, token, merge=request.merge)
+async def set_session(request: SessionContextRequest, authorization: str | None = Header(default=None), _: None = Depends(require_access)) -> dict:
+    merged = set_session_context(request.session_id, request.context, authorization, merge=request.merge)
     return {
         "session_id": request.session_id,
         "keys": list(merged.keys()),
@@ -637,8 +707,9 @@ async def set_session(request: SessionContextRequest, token: str = Depends(requi
 
 
 @app.post("/v1/session/data-panels")
-async def session_data_panels(request: SessionRefreshRequest, token: str = Depends(require_access)) -> dict:
-    context = get_session_context(request.session_id, token)
+async def session_data_panels(request: SessionRefreshRequest, authorization: str | None = Header(default=None), _: None = Depends(require_access)) -> dict:
+    enforce_shell_access(request.shell)
+    context = get_session_context(request.session_id, authorization)
     scoped_context = scope_context(context, request.shell)
     packet = build_cognitive_packet(
         request.trigger,
@@ -708,8 +779,9 @@ def _build_relationships_feed(context: dict, shell: Shell) -> dict:
 
 
 @app.post("/v1/relationships/feed")
-async def relationships_feed(request: RelationshipFeedRequest, token: str = Depends(require_access)) -> dict:
-    context = resolve_session_context(request, token)
+async def relationships_feed(request: RelationshipFeedRequest, authorization: str | None = Header(default=None), _: None = Depends(require_access)) -> dict:
+    enforce_shell_access(request.shell)
+    context = resolve_session_context(request, authorization)
     scoped_context = scope_context(context, request.shell)
     packet = build_cognitive_packet("mixed social feed", scoped_context, [])
     feed = _build_relationships_feed(scoped_context, request.shell)
@@ -725,8 +797,9 @@ async def relationships_feed(request: RelationshipFeedRequest, token: str = Depe
 
 
 @app.post("/v1/intelligence")
-async def intelligence(request: IntelligenceRequest, token: str = Depends(require_access)) -> dict:
-    context = resolve_session_context(request, token)
+async def intelligence(request: IntelligenceRequest, authorization: str | None = Header(default=None), _: None = Depends(require_access)) -> dict:
+    enforce_shell_access(request.shell)
+    context = resolve_session_context(request, authorization)
     emergency = medical_emergency_response(request.messages[-1].content)
     if emergency:
         return {
@@ -748,9 +821,9 @@ async def intelligence(request: IntelligenceRequest, token: str = Depends(requir
             "safety_intercept": "medical_emergency",
         }
 
-    # Hosted image generation stays off unless the operator enables provider routes.
+    # Natural image-generation requests go straight to the configured media provider.
     image_prompt = parse_image_request(request.messages[-1].content)
-    if provider_routes_enabled() and image_prompt:
+    if image_prompt:
         started = time.perf_counter()
         result = await asyncio.to_thread(generate_image, image_prompt, context)
         latency_ms = round((time.perf_counter() - started) * 1000)
@@ -781,7 +854,8 @@ async def intelligence(request: IntelligenceRequest, token: str = Depends(requir
             "latency_ms": latency_ms,
         }
 
-    if provider_routes_enabled() and parse_balance_query(request.messages[-1].content):
+    # Balance / fund queries go to Plaid if configured.
+    if parse_balance_query(request.messages[-1].content):
         started = time.perf_counter()
         result = await asyncio.to_thread(get_balances, context)
         latency_ms = round((time.perf_counter() - started) * 1000)
@@ -822,13 +896,14 @@ async def intelligence(request: IntelligenceRequest, token: str = Depends(requir
 
 
 @app.post("/chat")
-async def chat(request: IntelligenceRequest, token: str = Depends(require_access)) -> dict:
-    return await intelligence(request, token)
+async def chat(request: IntelligenceRequest, access: None = Depends(require_access)) -> dict:
+    return await intelligence(request, access)
 
 
 @app.post("/v1/stream")
-async def stream_intelligence(request: IntelligenceRequest, token: str = Depends(require_access)):
-    context = resolve_session_context(request, token)
+async def stream_intelligence(request: IntelligenceRequest, authorization: str | None = Header(default=None), _: None = Depends(require_access)):
+    enforce_shell_access(request.shell)
+    context = resolve_session_context(request, authorization)
     emergency = medical_emergency_response(request.messages[-1].content)
     if emergency:
         def emergency_events():
@@ -843,8 +918,9 @@ async def stream_intelligence(request: IntelligenceRequest, token: str = Depends
             yield f"event: done\ndata: {json.dumps({'latency_ms': 0, 'production_replacement_enabled': production_replacement_enabled()}, separators=(',', ':'))}\n\n"
         return StreamingResponse(emergency_events(), media_type="text/event-stream", headers={"X-Accel-Buffering": "no", "Cache-Control": "no-store"})
 
+    # Natural image-generation requests are sent to the configured media provider.
     image_prompt = parse_image_request(request.messages[-1].content)
-    if provider_routes_enabled() and image_prompt:
+    if image_prompt:
         started = time.perf_counter()
         result = await asyncio.to_thread(generate_image, image_prompt, context)
         latency_ms = round((time.perf_counter() - started) * 1000)
@@ -876,7 +952,8 @@ async def stream_intelligence(request: IntelligenceRequest, token: str = Depends
             headers={"X-Accel-Buffering": "no", "Cache-Control": "no-store"},
         )
 
-    if provider_routes_enabled() and parse_balance_query(request.messages[-1].content):
+    # Balance / fund queries go to Plaid if configured.
+    if parse_balance_query(request.messages[-1].content):
         started = time.perf_counter()
         result = await asyncio.to_thread(get_balances, context)
         latency_ms = round((time.perf_counter() - started) * 1000)
@@ -957,7 +1034,9 @@ async def stream_intelligence(request: IntelligenceRequest, token: str = Depends
 
 
 @app.post("/generate")
-async def generate(request: LegacyGenerationRequest, token: str = Depends(require_access)) -> dict:
+async def generate(request: LegacyGenerationRequest, access: None = Depends(require_access)) -> dict:
+    if _auth_mode() == "production":
+        raise HTTPException(status_code=403, detail="Legacy generation route disabled pending explicit shell identity")
     result = await intelligence(
         IntelligenceRequest(
             shell=Shell.CORE,
@@ -967,7 +1046,7 @@ async def generate(request: LegacyGenerationRequest, token: str = Depends(requir
             max_tokens=request.max_new_tokens,
             temperature=request.temperature,
         ),
-        token,
+        access,
     )
     return {
         "content": result["content"],
@@ -986,14 +1065,14 @@ class WindowsActionRequest(BaseModel):
 
 
 @app.post("/v1/windows/execute")
-async def windows_execute(request: WindowsActionRequest, _: str = Depends(require_access)) -> dict:
+async def windows_execute(request: WindowsActionRequest, access: None = Depends(require_access)) -> dict:
     """Execute one allowed local Windows desktop action.
 
     Only the actions listed in `src/windows/executor.py` are allowed.
-    The route stays dark unless AERYNZA_AI_ENABLE_DEVICE_ROUTES or
-    ASCENSION_AI_ENABLE_DEVICE_ROUTES is set.
+    The request is authenticated and the shell remains responsible for
+    deciding when an action is appropriate.
     """
-    require_device_routes()
+    require_certified_action_gateway()
     return executor.run(request.action, **request.params)
 
 
@@ -1004,13 +1083,13 @@ class AndroidActionRequest(BaseModel):
 
 
 @app.post("/v1/android/execute")
-async def android_execute(request: AndroidActionRequest, _: str = Depends(require_access)) -> dict:
+async def android_execute(request: AndroidActionRequest, access: None = Depends(require_access)) -> dict:
     """Execute one allowed Android action via a connected adb device.
 
     The phone must have USB debugging enabled and be authorized.
-    The route stays dark unless device routes are explicitly enabled.
+    The bridge uses the local `tools/adb/platform-tools/adb.exe` binary.
     """
-    require_device_routes()
+    require_certified_action_gateway()
     return android_bridge.run(request.action, **request.params)
 
 
@@ -1021,9 +1100,9 @@ class iPhoneActionRequest(BaseModel):
 
 
 @app.post("/v1/iphone/execute")
-async def iphone_execute(request: iPhoneActionRequest, _: str = Depends(require_access)) -> dict:
+async def iphone_execute(request: iPhoneActionRequest, access: None = Depends(require_access)) -> dict:
     """Execute one allowed iPhone action through a user-configured iOS Shortcut webhook."""
-    require_device_routes()
+    require_certified_action_gateway()
     return iphone_bridge.run(request.action, context=request.context, **request.params)
 
 
@@ -1034,20 +1113,19 @@ class MediaRequest(BaseModel):
 
 
 @app.post("/v1/media/generate")
-async def media_generate(request: MediaRequest, _: str = Depends(require_access)) -> dict:
+async def media_generate(request: MediaRequest, _: None = Depends(require_access)) -> dict:
     """Generate media through the configured outside provider. DALL-E 3 is the first supported provider."""
-    require_provider_routes()
     return await asyncio.to_thread(generate_image, request.prompt, request.context)
 
 
 @app.post("/v1/iphone/inbox")
-async def iphone_inbox(payload: dict, _: str = Depends(require_access)) -> dict:
+async def iphone_inbox(payload: dict, access: None = Depends(require_access)) -> dict:
     """Receive a JSON payload from an iOS Shortcut.
 
     The iPhone can POST here to send battery, location, or any other
     data it is allowed to share. Data is stored locally in data/iphone_inbox.json.
     """
-    require_device_routes()
+    require_certified_action_gateway()
     return iphone_bridge.receive(payload)
 
 
@@ -1058,11 +1136,9 @@ class LoginRequest(BaseModel):
 
 @app.post("/v1/login")
 async def login(request: LoginRequest) -> dict:
-    """Authenticate with email and password stored in Windows Credential Manager.
-
-    The resulting lab session does not authorize service routes.
-    """
-    import keyring
+    """Local desktop login is unavailable in production service mode."""
+    if _auth_mode() != "development":
+        raise HTTPException(status_code=404, detail="Not found")
     stored = keyring.get_password(KEYRING_SERVICE, request.email)
     if not stored or not hmac.compare_digest(stored, request.password):
         raise HTTPException(status_code=401, detail="Invalid email or password.")

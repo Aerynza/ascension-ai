@@ -46,6 +46,7 @@ SHELL_ACTION_PREFIXES = {
                        "nutrition.", "learning.", "documents.", "messages.", "calendar.", "task."),
     Shell.NEXUS_FAMILY: ("schedule.", "finance.refresh_", "finance.prepare_", "housing.", "creation.",
                          "nutrition.", "learning.", "career.", "documents.", "messages.", "calendar.", "task."),
+    Shell.EXECUTIVE: ("schedule.", "finance.refresh_", "finance.prepare_", "creation.", "learning.", "career.", "documents.", "messages.", "calendar.", "task."),
     Shell.CREATION: ("creation.", "immersive.", "documents.", "messages.", "learning.", "career."),
 }
 
