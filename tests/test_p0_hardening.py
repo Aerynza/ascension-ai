@@ -19,7 +19,16 @@ FREE_RAM_BUDGET = 268_435_456
 
 
 @pytest.fixture(autouse=True)
-def _clear_sessions():
+def _clear_sessions(monkeypatch):
+    # Existing bearer-only P0 tests exercise the explicitly local development
+    # compatibility contract. Production requires independent signed admission.
+    monkeypatch.delenv("RENDER", raising=False)
+    monkeypatch.delenv("AERYNZA_AI_AUTH_MODE", raising=False)
+    monkeypatch.setenv("ASCENSION_AI_AUTH_MODE", "development")
+    monkeypatch.delenv("ASCENSION_AI_LOCAL_DEV_BYPASS", raising=False)
+    monkeypatch.delenv("ASCENSION_AI_ALLOW_TEST_TOKEN", raising=False)
+    monkeypatch.delenv("AERYNZA_AI_ENABLE_DEVICE_ROUTES", raising=False)
+    monkeypatch.delenv("AERYNZA_AI_ENABLE_PROVIDER_ROUTES", raising=False)
     SESSION_CONTEXTS.clear()
     yield
     SESSION_CONTEXTS.clear()
@@ -82,11 +91,11 @@ def test_production_without_service_token_fails_closed(monkeypatch):
     monkeypatch.delenv("AERYNZA_AI_SERVICE_TOKEN", raising=False)
     monkeypatch.delenv("AERYNZA_AI_RAM_BUDGET_BYTES", raising=False)
     monkeypatch.delenv("ASCENSION_AI_RAM_BUDGET_BYTES", raising=False)
-    with TestClient(app) as test_client:
-        health = test_client.get("/health")
-        denied = test_client.get("/model/info", headers=_auth("anything"))
-    assert health.status_code == 200
-    assert denied.status_code == 503
+    # Missing signing configuration fails startup rather than falling back
+    # to accepting a bearer without the required production envelope.
+    with pytest.raises(RuntimeError, match="SIGNED_REQUESTS"):
+        with TestClient(app):
+            pass
 
 
 def test_thesis_returns_a_thesis(client):
