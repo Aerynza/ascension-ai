@@ -35,7 +35,7 @@ def signing(monkeypatch):
     monkeypatch.setenv("ASCENSION_AI_SIGNING_KEY_BASE64", base64.b64encode(key).decode())
     monkeypatch.setenv("ASCENSION_AI_REPLAY_REDIS_URL", "redis://localhost:6379/0")
     store = NonceStore()
-    monkeypatch.setattr(api, "redis_nonce_store", lambda _url: store)
+    monkeypatch.setattr(api, "replay_nonce_store", lambda _url: store)
     return key
 
 
@@ -151,7 +151,7 @@ async def test_replay_store_failure_fails_closed(signing, monkeypatch):
         def claim(self, key, ttl_seconds):
             raise ConnectionError("Replay store unavailable")
 
-    monkeypatch.setattr(api, "redis_nonce_store", lambda _url: UnavailableNonceStore())
+    monkeypatch.setattr(api, "replay_nonce_store", lambda _url: UnavailableNonceStore())
     body = {"text": "hello"}
     headers = auth_headers(body, signing, nonce="redis-outage")
     transport = httpx.ASGITransport(app=api.app)
