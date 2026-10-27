@@ -702,8 +702,8 @@ async def plan_surfaces(request: SurfacePlanRequest, authorization: str | None =
 
 
 @app.post("/v1/session/context")
-async def set_session(request: SessionContextRequest, authorization: str | None = Header(default=None), _: None = Depends(require_access)) -> dict:
-    merged = set_session_context(request.session_id, request.context, authorization, merge=request.merge)
+async def set_session(request: SessionContextRequest, access: str = Depends(require_access)) -> dict:
+    merged = set_session_context(request.session_id, request.context, access, merge=request.merge)
     return {
         "session_id": request.session_id,
         "keys": list(merged.keys()),
@@ -713,9 +713,9 @@ async def set_session(request: SessionContextRequest, authorization: str | None 
 
 
 @app.post("/v1/session/data-panels")
-async def session_data_panels(request: SessionRefreshRequest, authorization: str | None = Header(default=None), _: None = Depends(require_access)) -> dict:
+async def session_data_panels(request: SessionRefreshRequest, access: str = Depends(require_access)) -> dict:
     enforce_shell_access(request.shell)
-    context = get_session_context(request.session_id, authorization)
+    context = get_session_context(request.session_id, access)
     scoped_context = scope_context(context, request.shell)
     packet = build_cognitive_packet(
         request.trigger,
