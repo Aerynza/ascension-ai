@@ -439,7 +439,15 @@ def validate_auth_configuration() -> None:
     if _auth_mode() == "production":
         if not signing_enabled():
             raise RuntimeError("ASCENSION_AI_REQUIRE_SIGNED_REQUESTS=true is required in production")
-        load_signing_configuration()
+        signing_config = load_signing_configuration()
+        if signing_config[2].startswith(("postgres://", "postgresql://")):
+            # Do not bring up a signed production service with a privileged,
+            # missing or inaccessible replay database credential.
+            try:
+                from src.serving.http_envelope import postgres_nonce_store
+                postgres_nonce_store(signing_config[2]).preflight()
+            except Exception:
+                raise RuntimeError("Secure PostgreSQL replay store preflight failed") from None
         if not os.getenv("ASCENSION_AI_SERVICE_TOKEN", "").strip():
             raise RuntimeError("ASCENSION_AI_SERVICE_TOKEN is required in production")
         if not _authorized_shells():
