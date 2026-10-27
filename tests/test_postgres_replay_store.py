@@ -21,6 +21,7 @@ class FakePostgres:
         self.statements = []
         self.closed = 0
         self.fail = False
+        self.authorized = True
 
     def connect(self, dsn, *, connect_timeout, sslmode):
         assert dsn == URL and connect_timeout == 3 and sslmode == "require"
@@ -45,6 +46,8 @@ class FakePostgres:
             def execute(self, sql, params=None):
                 outer.statements.append((sql, params))
                 self.result = None
+                if "SELECT NOT (r.rolsuper OR r.rolbypassrls OR r.rolcreaterole)" in sql:
+                    self.result = (outer.authorized, True, True, True)
                 if "INSERT INTO aerynza_ai_security.signed_request_nonces" in sql:
                     assert "ON CONFLICT (nonce_hash) DO NOTHING" in sql
                     assert "RETURNING nonce_hash" in sql
@@ -137,3 +140,38 @@ def test_postgres_config_requires_exactly_one_backend_and_never_accepts_unsigned
     monkeypatch.delenv("ASCENSION_AI_REPLAY_REDIS_URL")
     with pytest.raises(RuntimeError, match="exactly one"):
         http_envelope.load_signing_configuration()
+
+
+def test_production_preflight_requires_database_reachability_and_unprivileged_writer():
+    database = FakePostgres()
+    store = PostgresNonceStore(URL, connector=database.connect)
+    store.preflight()
+    database.authorized = False
+    with pytest.raises(RuntimeError, match="not properly isolated"):
+        store.preflight()
+    database.fail = True
+    with pytest.raises(ConnectionError):
+        store.preflight()
+
+
+def test_ai_production_boot_blocks_replay_database_outage_before_model_load(monkeypatch):
+    from src.serving import api
+    monkeypatch.setenv("ASCENSION_AI_AUTH_MODE", "production")
+    monkeypatch.setenv("ASCENSION_AI_REQUIRE_SIGNED_REQUESTS", "true")
+    monkeypatch.setenv("ASCENSION_AI_SERVICE_TOKEN", "demo-test-service-token")
+    monkeypatch.setenv("ASCENSION_AI_SERVICE_SHELLS", "ap")
+    monkeypatch.setenv("ASCENSION_AI_TRUSTED_ISSUER", "aerynza-product")
+    monkeypatch.setenv("ASCENSION_AI_SIGNING_KEY_ID", "current")
+    monkeypatch.setenv("ASCENSION_AI_SIGNING_KEY_BASE64", base64.b64encode(b"x" * 32).decode())
+    monkeypatch.setenv("ASCENSION_AI_REPLAY_POSTGRES_URL", URL)
+    monkeypatch.delenv("ASCENSION_AI_REPLAY_REDIS_URL", raising=False)
+
+    def down(_url):
+        class Unavailable:
+            def preflight(self):
+                raise ConnectionError("private connection info must not leak")
+        return Unavailable()
+    monkeypatch.setattr(http_envelope, "postgres_nonce_store", down)
+    with pytest.raises(RuntimeError, match="Secure PostgreSQL replay store preflight failed") as exc:
+        api.validate_auth_configuration()
+    assert "private connection info" not in str(exc.value)
