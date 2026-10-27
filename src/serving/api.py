@@ -97,7 +97,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
-from src.serving.http_envelope import signing_enabled, load_signing_configuration, check_http_envelope, redis_nonce_store
+from src.serving.http_envelope import signing_enabled, load_signing_configuration, check_http_envelope, replay_nonce_store
 from src.serving.envelope_validation import InvalidEnvelope
 from src.core.capabilities import CAPABILITIES
 from src.core.action_runtime import shell_action_catalog, shell_allows_action, validate_action_receipt
@@ -153,7 +153,7 @@ app.mount("/static", StaticFiles(directory=str(PUBLIC)), name="static")
 
 @app.middleware("http")
 async def signed_request_boundary(request, call_next):
-    """Staged signing enforcement; requires real Redis and matching product signer."""
+    """Staged signing: durable shared DB/Redis nonce authority and product signer."""
     if _auth_mode() != "production" or not signing_enabled():
         return await call_next(request)
     if request.url.path in {"/docs", "/redoc", "/openapi.json"}:
@@ -192,7 +192,7 @@ async def signed_request_boundary(request, call_next):
         if not isinstance(payload, dict):
             raise InvalidEnvelope("Expected JSON object body")
         config = load_signing_configuration()
-        nonce_store = redis_nonce_store(config[2])
+        nonce_store = replay_nonce_store(config[2])
         identity = await asyncio.to_thread(
             check_http_envelope, request.headers, payload, config=config,
             nonce_store=nonce_store, method=request.method, path=request.url.path,
