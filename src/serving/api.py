@@ -233,7 +233,11 @@ async def signed_request_boundary(request, call_next):
         return JSONResponse(status_code=400, content={"detail": "Unsigned query forbidden"})
     if not _service_tokens():
         return JSONResponse(status_code=503, content={"detail": "Service auth unavailable"})
-    if not signing_enabled():
+    try:
+        active_signing = signing_enabled()
+    except (RuntimeError, ValueError):
+        return JSONResponse(status_code=503, content={"detail": "Signed request configuration invalid"})
+    if not active_signing:
         return JSONResponse(status_code=503, content={"detail": "Signed request admission required"})
     authorization = request.headers.get("authorization", "")
     supplied = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
