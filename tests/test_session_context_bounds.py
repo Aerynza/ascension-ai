@@ -135,3 +135,32 @@ def test_development_explicit_flags_remain_available_for_local_lab(monkeypatch):
     monkeypatch.setenv("AERYNZA_AI_ENABLE_PROVIDER_ROUTES", "true")
     assert api.device_routes_enabled() is True
     assert api.provider_routes_enabled() is True
+
+
+def test_native_background_yields_when_foreground_or_queue_is_busy(monkeypatch):
+    from fastapi import HTTPException
+    states = [
+        {"ready": True, "queue": {"active_requests": 1, "queue_depth": 0}},
+        {"ready": True, "queue": {"active_requests": 0, "queue_depth": 2}},
+        {"ready": True, "queue": {"active_requests": 0, "queue_depth": 0, "inference_hung": True}},
+        {"ready": False, "queue": {"active_requests": 0, "queue_depth": 0}},
+        {"ready": True, "queue": {}},
+    ]
+    for state in states:
+        monkeypatch.setattr(api.runtime, "status", lambda state=state: state)
+        for mode in ("background", "proactive"):
+            with pytest.raises(HTTPException) as result:
+                api.require_idle_for_background(mode)
+            assert result.value.status_code == 503
+            assert result.value.headers["Retry-After"] == "2"
+        # Interactive requests retain their normal queue admission path.
+        api.require_idle_for_background("conversation")
+
+
+def test_native_background_allows_idle_model_then_uses_existing_lock(monkeypatch):
+    monkeypatch.setattr(api.runtime, "status", lambda: {
+        "ready": True,
+        "queue": {"active_requests": 0, "queue_depth": 0, "inference_hung": False},
+    })
+    for mode in ("background", "proactive", "planning", "conversation"):
+        api.require_idle_for_background(mode)
