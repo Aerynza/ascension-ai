@@ -99,3 +99,38 @@ def test_production_http_personal_session_endpoints_deny_before_storage(monkeypa
     }, headers=headers)
     assert [write.status_code, read.status_code, inference.status_code] == [403, 403, 403]
     assert not api.SESSION_CONTEXTS
+
+
+def test_production_flags_never_authorize_unscoped_native_device_or_provider_actions(monkeypatch):
+    from fastapi.testclient import TestClient
+    monkeypatch.setenv("AERYNZA_AI_AUTH_MODE", "production")
+    monkeypatch.setenv("ASCENSION_AI_SERVICE_TOKEN", "shared-service-token")
+    monkeypatch.setenv("AERYNZA_AI_ENABLE_DEVICE_ROUTES", "true")
+    monkeypatch.setenv("AERYNZA_AI_ENABLE_PROVIDER_ROUTES", "true")
+    assert api.device_routes_enabled() is False
+    assert api.provider_routes_enabled() is False
+    headers = {"Authorization": "Bearer shared-service-token"}
+    client = TestClient(api.app)
+    cases = (
+        ("/v1/windows/execute", {"action": "screenshot"}),
+        ("/v1/android/execute", {"action": "home"}),
+        ("/v1/iphone/execute", {"action": "list"}),
+        ("/v1/iphone/inbox", {"location": "private"}),
+        ("/v1/media/generate", {"prompt": "private image"}),
+    )
+    for path, body in cases:
+        result = client.post(path, json=body, headers=headers)
+        assert result.status_code == 403, (path, result.status_code)
+    lab_login = client.post("/v1/login", json={
+        "email": "lab@example.com", "password": "no-keyring-call"
+    })
+    assert lab_login.status_code == 404
+
+
+def test_development_explicit_flags_remain_available_for_local_lab(monkeypatch):
+    monkeypatch.delenv("RENDER", raising=False)
+    monkeypatch.setenv("AERYNZA_AI_AUTH_MODE", "development")
+    monkeypatch.setenv("AERYNZA_AI_ENABLE_DEVICE_ROUTES", "true")
+    monkeypatch.setenv("AERYNZA_AI_ENABLE_PROVIDER_ROUTES", "true")
+    assert api.device_routes_enabled() is True
+    assert api.provider_routes_enabled() is True
