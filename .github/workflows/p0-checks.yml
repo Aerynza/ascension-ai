@@ -17,6 +17,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install "fastapi>=0.115,<1" "pydantic>=2.8,<3" pytest httpx
       - name: Run P0 HTTP tests
-        run: python -m pytest tests/test_p0_hardening.py tests/test_model_deploy_preflight.py -q
+        run: python -m pytest tests/test_p0_hardening.py tests/test_model_deploy_preflight.py tests/test_release_readiness.py -q
       - name: Compile service modules
         run: python -m compileall -q src scripts
