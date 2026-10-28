@@ -514,6 +514,29 @@ def require_native_ready() -> None:
         raise HTTPException(status_code=503, detail=runtime.status()["error"] or "Aerynza native model is not ready.")
 
 
+def require_idle_for_background(mode: str) -> None:
+    """Yield to interactive AP before starting unattended local generation.
+
+    Best-effort queue check: a durable foreground-priority dispatcher is still
+    required for production guarantees under simultaneous request races.
+    """
+    if mode not in {"background", "proactive"}:
+        return
+    state = runtime.status()
+    queue = state.get("queue", {})
+    if (not state.get("ready")
+        or type(queue.get("active_requests")) is not int
+        or type(queue.get("queue_depth")) is not int
+        or queue["active_requests"] > 0 or queue["queue_depth"] > 0
+        or queue["active_requests"] < 0 or queue["queue_depth"] < 0
+        or queue.get("inference_hung") is True):
+        raise HTTPException(
+            status_code=503,
+            detail="Native background AI yielded to interactive work",
+            headers={"Retry-After": "2"},
+        )
+
+
 def effective_max_tokens(requested: int, mode: str = "conversation") -> int:
     """Bound interactive latency while preserving deeper queued reasoning."""
     profile_limits = {"starter": 72, "standard": 420, "pro": 1200, "candidate": 1200, "deep": 1400}
@@ -873,6 +896,7 @@ async def relationships_feed(request: RelationshipFeedRequest, token: str = Depe
 
 @app.post("/v1/intelligence")
 async def intelligence(request: IntelligenceRequest, token: str = Depends(require_access)) -> dict:
+    require_idle_for_background(request.mode)
     context = resolve_session_context(request, token)
     emergency = medical_emergency_response(request.messages[-1].content)
     if emergency:
@@ -975,6 +999,7 @@ async def chat(request: IntelligenceRequest, token: str = Depends(require_access
 
 @app.post("/v1/stream")
 async def stream_intelligence(request: IntelligenceRequest, token: str = Depends(require_access)):
+    require_idle_for_background(request.mode)
     context = resolve_session_context(request, token)
     emergency = medical_emergency_response(request.messages[-1].content)
     if emergency:
