@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections import OrderedDict
+from copy import deepcopy
 import hashlib
 import hmac
 import json
@@ -17,9 +19,12 @@ from typing import Literal
 
 SESSIONS = set()
 KEYRING_SERVICE = "Aerynza AI"
-SESSION_CONTEXTS: dict[str, dict] = {}
+# Bounded, ephemeral inference cache. Durable personal data belongs in LifeOS.
+SESSION_CONTEXTS: OrderedDict[str, tuple[float, dict]] = OrderedDict()
 _SESSION_LOCK = Lock()
 MAX_SESSION_CONTEXT_BYTES = 200_000
+MAX_ACTIVE_SESSION_CONTEXTS = 128
+SESSION_CONTEXT_TTL_SECONDS = 3600
 
 
 def _session_key(session_id: str, token: str) -> str:
@@ -40,12 +45,24 @@ def _strip_provider_keys(value):
     return value
 
 
+def _expire_session_contexts(now: float) -> None:
+    """Caller holds _SESSION_LOCK; purge inactive sessions before reads/writes."""
+    for key, (expires, _) in list(SESSION_CONTEXTS.items()):
+        if expires <= now:
+            SESSION_CONTEXTS.pop(key, None)
+
+
 def get_session_context(session_id: str, token: str) -> dict:
     if not session_id or not token:
         return {}
     key = _session_key(session_id, token)
     with _SESSION_LOCK:
-        return SESSION_CONTEXTS.get(key, {}).copy()
+        _expire_session_contexts(time.monotonic())
+        item = SESSION_CONTEXTS.get(key)
+        if item is None:
+            return {}
+        SESSION_CONTEXTS.move_to_end(key)
+        return deepcopy(item[1])
 
 
 def set_session_context(session_id: str, context: dict, token: str, merge: bool = False) -> dict:
@@ -54,12 +71,18 @@ def set_session_context(session_id: str, context: dict, token: str, merge: bool 
     safe_context = _strip_provider_keys(context)
     key = _session_key(session_id, token)
     with _SESSION_LOCK:
-        existing = SESSION_CONTEXTS.get(key, {}) if merge else {}
+        now = time.monotonic()
+        _expire_session_contexts(now)
+        item = SESSION_CONTEXTS.get(key)
+        existing = item[1] if merge and item is not None else {}
         merged = _merge_context(existing, safe_context)
         if len(json.dumps(merged, default=str)) > MAX_SESSION_CONTEXT_BYTES:
             raise ValueError("session context exceeds size limit")
-        SESSION_CONTEXTS[key] = merged
-    return merged
+        SESSION_CONTEXTS[key] = (now + SESSION_CONTEXT_TTL_SECONDS, deepcopy(merged))
+        SESSION_CONTEXTS.move_to_end(key)
+        while len(SESSION_CONTEXTS) > MAX_ACTIVE_SESSION_CONTEXTS:
+            SESSION_CONTEXTS.popitem(last=False)
+    return deepcopy(merged)
 
 
 def _merge_context(existing: dict, new: dict) -> dict:
