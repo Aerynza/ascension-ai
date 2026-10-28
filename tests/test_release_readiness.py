@@ -27,6 +27,17 @@ def report(age_days=0, profile="pro_v231", model_sha=None):
 
 
 class ReleaseReadinessTests(unittest.TestCase):
+    def test_readiness_does_not_advertise_verified_actor_before_middleware(self):
+        import asyncio
+        from src.serving.api import replacement_readiness
+        state = asyncio.run(replacement_readiness())
+        self.assertEqual(state["signed_actor_admission"], {
+            "enforced": False,
+            "durable_replay_protection": False,
+            "account_subject_verified": False,
+        })
+        self.assertFalse(state["replacement_ready"])
+
     def test_model_loaded_without_evidence_is_not_qualified(self):
         with patch.dict(os.environ, {}, clear=True):
             self.assertFalse(any(evaluate_release_gates(MODEL, PROFILE, signed_admission_active=True).values()))
