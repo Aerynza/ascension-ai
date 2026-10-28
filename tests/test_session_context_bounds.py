@@ -51,3 +51,51 @@ def test_oversized_context_rejected_without_persisting():
     with pytest.raises(ValueError, match="size limit"):
         api.set_session_context("large", {"content": "x" * 200_001}, "token")
     assert api.get_session_context("large", "token") == {}
+
+
+def test_production_shared_bearer_cannot_store_or_read_session(monkeypatch):
+    from fastapi import HTTPException
+    monkeypatch.setenv("AERYNZA_AI_AUTH_MODE", "production")
+    with pytest.raises(HTTPException) as read_error:
+        api.get_session_context("same-session", "shared-service-token")
+    assert read_error.value.status_code == 403
+    with pytest.raises(HTTPException) as write_error:
+        api.set_session_context("same-session", {"private": "account-A"}, "shared-service-token")
+    assert write_error.value.status_code == 403
+    assert not api.SESSION_CONTEXTS
+
+
+def test_production_stateless_context_still_works_without_session(monkeypatch):
+    from types import SimpleNamespace
+    from fastapi import HTTPException
+    monkeypatch.setenv("RENDER", "true")
+    request = SimpleNamespace(session_id="", persist_context=False, context={"owner": "LifeOS"})
+    assert api.resolve_session_context(request, "shared-service-token") == {"owner": "LifeOS"}
+    for session_id, persist_context in [("user-picked-session", False), ("", True), ("user-picked-session", True)]:
+        with pytest.raises(HTTPException) as error:
+            api.resolve_session_context(SimpleNamespace(
+                session_id=session_id, persist_context=persist_context, context={"private": True}
+            ), "shared-service-token")
+        assert error.value.status_code == 403
+    assert not api.SESSION_CONTEXTS
+
+
+def test_production_http_personal_session_endpoints_deny_before_storage(monkeypatch):
+    from fastapi.testclient import TestClient
+    monkeypatch.setenv("AERYNZA_AI_AUTH_MODE", "production")
+    monkeypatch.setenv("ASCENSION_AI_SERVICE_TOKEN", "shared-service-token")
+    headers = {"Authorization": "Bearer shared-service-token"}
+    client = TestClient(api.app)
+    write = client.post("/v1/session/context", json={
+        "session_id": "same-for-two-users", "context": {"owner": "A"}
+    }, headers=headers)
+    read = client.post("/v1/session/data-panels", json={
+        "session_id": "same-for-two-users"
+    }, headers=headers)
+    inference = client.post("/v1/intelligence", json={
+        "messages": [{"role": "user", "content": "hello"}],
+        "session_id": "same-for-two-users",
+        "context": {"owner": "B"}
+    }, headers=headers)
+    assert [write.status_code, read.status_code, inference.status_code] == [403, 403, 403]
+    assert not api.SESSION_CONTEXTS
