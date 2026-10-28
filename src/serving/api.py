@@ -475,6 +475,14 @@ async def replacement_readiness(_: None = Depends(require_access)) -> dict:
         "replacement_ready": ready,
         "required_gates": list(REQUIRED_RELEASE_GATES),
         "gates": gates,
+        # The current native mainline does not install the reviewed signed
+        # user-actor middleware (see staged PR #7). Never substitute service
+        # bearer authentication for a verified account subject.
+        "signed_actor_admission": {
+            "enforced": False,
+            "durable_replay_protection": False,
+            "account_subject_verified": False,
+        },
         "evidence": {
             "status": "operator_approved_checkpoint_bound_report" if ready else "not_fully_verified",
         },
