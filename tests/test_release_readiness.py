@@ -37,6 +37,14 @@ class ReleaseReadinessTests(unittest.TestCase):
             "account_subject_verified": False,
         })
         self.assertFalse(state["replacement_ready"])
+        with patch.dict(os.environ, {
+            "AERYNZA_AI_AUTH_MODE": "production",
+            "AERYNZA_AI_ENABLE_PROVIDER_ROUTES": "true",
+        }):
+            production = asyncio.run(replacement_readiness())
+            self.assertTrue(production["native_inference_only"])
+            self.assertFalse(production["outside_provider"])
+            self.assertFalse(production["signed_actor_admission"]["enforced"])
 
     def test_model_loaded_without_evidence_is_not_qualified(self):
         with patch.dict(os.environ, {}, clear=True):
