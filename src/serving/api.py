@@ -551,7 +551,7 @@ def require_idle_for_background(mode: str) -> None:
         or queue["active_requests"] < 0 or queue["queue_depth"] < 0
         or queue.get("inference_hung") is True):
         raise HTTPException(
-            status_code=503,
+            status_code=409,
             detail="Native background AI yielded to interactive work",
             headers={"Retry-After": "2"},
         )
@@ -1005,6 +1005,11 @@ async def intelligence(request: IntelligenceRequest, token: str = Depends(requir
             max_tokens=effective_max_tokens(request.max_tokens, request.mode),
         )
     except NativeInferenceQueueTimeout as error:
+        # A voluntary background yield is not a broken native model; do not
+        # trip LifeOS's provider outage circuit and delay foreground AP.
+        if request.mode in {"background", "proactive"}:
+            raise HTTPException(status_code=409, detail="Native background yielded to interactive work",
+                                headers={"Retry-After": "2"}) from error
         raise HTTPException(status_code=504, detail=str(error)) from error
     except RuntimeError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
