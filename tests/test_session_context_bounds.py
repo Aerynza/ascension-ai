@@ -97,7 +97,8 @@ def test_production_http_personal_session_endpoints_deny_before_storage(monkeypa
         "session_id": "same-for-two-users",
         "context": {"owner": "B"}
     }, headers=headers)
-    assert [write.status_code, read.status_code, inference.status_code] == [403, 403, 403]
+    # Unsigned production callers now fail at the gateway before the session guard.
+    assert [write.status_code, read.status_code, inference.status_code] == [503, 503, 503]
     assert not api.SESSION_CONTEXTS
 
 
@@ -120,11 +121,11 @@ def test_production_flags_never_authorize_unscoped_native_device_or_provider_act
     )
     for path, body in cases:
         result = client.post(path, json=body, headers=headers)
-        assert result.status_code == 403, (path, result.status_code)
+        assert result.status_code == 503, (path, result.status_code)
     lab_login = client.post("/v1/login", json={
         "email": "lab@example.com", "password": "no-keyring-call"
     })
-    assert lab_login.status_code == 404
+    assert lab_login.status_code == 503
 
 
 def test_development_explicit_flags_remain_available_for_local_lab(monkeypatch):
