@@ -941,7 +941,7 @@ async def intelligence(request: IntelligenceRequest, token: str = Depends(requir
 
     # Hosted image generation stays off unless the operator enables provider routes.
     image_prompt = parse_image_request(request.messages[-1].content)
-    if provider_routes_enabled() and image_prompt:
+    if request.mode not in {"background", "proactive"} and provider_routes_enabled() and image_prompt:
         started = time.perf_counter()
         result = await asyncio.to_thread(generate_image, image_prompt, context)
         latency_ms = round((time.perf_counter() - started) * 1000)
@@ -972,7 +972,7 @@ async def intelligence(request: IntelligenceRequest, token: str = Depends(requir
             "latency_ms": latency_ms,
         }
 
-    if provider_routes_enabled() and parse_balance_query(request.messages[-1].content):
+    if request.mode not in {"background", "proactive"} and provider_routes_enabled() and parse_balance_query(request.messages[-1].content):
         started = time.perf_counter()
         result = await asyncio.to_thread(get_balances, context)
         latency_ms = round((time.perf_counter() - started) * 1000)
@@ -1048,7 +1048,7 @@ async def stream_intelligence(request: IntelligenceRequest, token: str = Depends
         return StreamingResponse(emergency_events(), media_type="text/event-stream", headers={"X-Accel-Buffering": "no", "Cache-Control": "no-store"})
 
     image_prompt = parse_image_request(request.messages[-1].content)
-    if provider_routes_enabled() and image_prompt:
+    if request.mode not in {"background", "proactive"} and provider_routes_enabled() and image_prompt:
         started = time.perf_counter()
         result = await asyncio.to_thread(generate_image, image_prompt, context)
         latency_ms = round((time.perf_counter() - started) * 1000)
@@ -1080,7 +1080,7 @@ async def stream_intelligence(request: IntelligenceRequest, token: str = Depends
             headers={"X-Accel-Buffering": "no", "Cache-Control": "no-store"},
         )
 
-    if provider_routes_enabled() and parse_balance_query(request.messages[-1].content):
+    if request.mode not in {"background", "proactive"} and provider_routes_enabled() and parse_balance_query(request.messages[-1].content):
         started = time.perf_counter()
         result = await asyncio.to_thread(get_balances, context)
         latency_ms = round((time.perf_counter() - started) * 1000)

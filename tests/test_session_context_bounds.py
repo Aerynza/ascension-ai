@@ -194,3 +194,52 @@ def test_background_runtime_race_returns_409_not_provider_outage(monkeypatch):
         asyncio.run(api.intelligence(request, token="test-only"))
     assert error.value.status_code == 409
     assert error.value.headers["Retry-After"] == "2"
+
+def test_background_never_calls_external_provider_branches_even_in_local_lab(monkeypatch):
+    """Native-only means zero third-party calls before the model is invoked."""
+    import asyncio
+    from src.serving import api
+
+    def fail_provider(*_args, **_kwargs):
+        raise AssertionError("Unattended mode attempted a provider-funded operation")
+
+    monkeypatch.setattr(api, "provider_routes_enabled", lambda: True)
+    monkeypatch.setattr(api, "parse_image_request", lambda _text: "image request")
+    monkeypatch.setattr(api, "parse_balance_query", lambda _text: True)
+    monkeypatch.setattr(api, "generate_image", fail_provider)
+    monkeypatch.setattr(api, "get_balances", fail_provider)
+    monkeypatch.setattr(api, "require_idle_for_background", lambda _mode: None)
+    monkeypatch.setattr(api, "require_native_ready", lambda: None)
+    monkeypatch.setattr(api, "medical_emergency_response", lambda _text: None)
+    monkeypatch.setattr(api, "respond", lambda **_kwargs: {
+        "provider": "ascension-native", "outside_provider": False,
+        "content": "Review the plan privately",
+        "production_replacement_enabled": False,
+    })
+    for mode in ("background", "proactive"):
+        request = api.IntelligenceRequest(
+            messages=[{"role": "user", "content": "Check my finances and draw an image"}],
+            mode=mode,
+        )
+        result = asyncio.run(api.intelligence(request, token="lab-only"))
+        assert result["provider"] == "ascension-native"
+        assert result["outside_provider"] is False
+        assert result["production_replacement_enabled"] is False
+
+
+def test_streaming_unattended_is_refused_before_any_provider_branch(monkeypatch):
+    import asyncio
+    from fastapi import HTTPException
+    from src.serving import api
+    monkeypatch.setattr(api, "provider_routes_enabled", lambda: True)
+    monkeypatch.setattr(api, "generate_image", lambda *_a, **_kw: (_ for _ in ()).throw(
+        AssertionError("No external provider calls allowed")
+    ))
+    for mode in ("background", "proactive"):
+        request = api.IntelligenceRequest(
+            messages=[{"role": "user", "content": "Generate image"}],
+            mode=mode,
+        )
+        with pytest.raises(HTTPException) as error:
+            asyncio.run(api.stream_intelligence(request, token="lab-only"))
+        assert error.value.status_code == 409
