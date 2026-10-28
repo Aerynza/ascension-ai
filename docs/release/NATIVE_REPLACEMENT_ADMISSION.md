@@ -3,6 +3,15 @@
 The native service can load a model without proving that it is an acceptable
 replacement for a provider-backed AP. **Candidate ready != replacement ready.**
 
+**Current hard stop:** The main native HTTP service still accepts shared
+service bearer credentials without a verified signed end-user actor. The
+release gate deliberately evaluates to false even if an operator submits a
+passing report. Future integration of reviewed signed request middleware must
+explicitly supply its verified operational state to the gate; toggling an env
+variable or copying an evidence report is insufficient. Work from the staged
+signed-admission PR #7, and prove distributed replay, shell and user binding.
+
+
 `/health` reports model load separately from `replacement_ready`; authenticated
 `/v1/readiness` reports each actual evidence gate. Both must remain false by
 default even after successful v231 startup.
