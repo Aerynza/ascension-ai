@@ -29,8 +29,10 @@ def report(age_days=0, profile="pro_v231", model_sha=None):
 class ReleaseReadinessTests(unittest.TestCase):
     def test_readiness_does_not_advertise_verified_actor_before_middleware(self):
         import asyncio
+        from fastapi import Request
         from src.serving.api import replacement_readiness
-        state = asyncio.run(replacement_readiness())
+        request = Request({"type": "http", "method": "GET", "path": "/v1/readiness", "headers": []})
+        state = asyncio.run(replacement_readiness(request))
         self.assertEqual(state["signed_actor_admission"], {
             "enforced": False,
             "durable_replay_protection": False,
@@ -41,7 +43,7 @@ class ReleaseReadinessTests(unittest.TestCase):
             "AERYNZA_AI_AUTH_MODE": "production",
             "AERYNZA_AI_ENABLE_PROVIDER_ROUTES": "true",
         }):
-            production = asyncio.run(replacement_readiness())
+            production = asyncio.run(replacement_readiness(request))
             self.assertTrue(production["native_inference_only"])
             self.assertFalse(production["outside_provider"])
             self.assertFalse(production["signed_actor_admission"]["enforced"])
