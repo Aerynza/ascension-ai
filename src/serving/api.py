@@ -123,7 +123,7 @@ def resolve_session_context(request, token: str) -> dict:
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
@@ -139,6 +139,8 @@ from src.financial.plaid_client import get_balances, parse_balance_query
 from src.core.orchestrator import deterministic_response, prepare_inference, respond, scope_context, surface_plan
 from src.core.safety import medical_emergency_response
 from src.core.thesis import build_member_thesis_contribution, build_thesis
+from src.serving.http_envelope import signing_enabled, load_signing_configuration, check_http_envelope, replay_nonce_store
+from src.serving.envelope_validation import InvalidEnvelope
 from src.phone import android_bridge, iphone_bridge
 from src.windows import executor
 
@@ -174,9 +176,108 @@ app.add_middleware(
     allow_origins=allowed_origins,
     allow_credentials=False,
     allow_methods=["GET", "POST"],
-    allow_headers=["Authorization", "Content-Type"],
+    allow_headers=["Authorization", "Content-Type", "X-Aerynza-Envelope", "X-Aerynza-Signature"],
 )
 app.mount("/static", StaticFiles(directory=str(PUBLIC)), name="static")
+
+
+MAX_SIGNED_BODY_BYTES = 1_048_576
+_SHELL_BOUND_PATHS = frozenset({
+    "/v1/intelligence", "/v1/stream", "/chat", "/v1/cognition",
+    "/v1/agent/plan", "/v1/retrieve", "/v1/surface-plan",
+    "/v1/relationships/feed", "/v1/session/data-panels", "/v1/thesis",
+    "/v1/thesis/contribution", "/v1/actions/receipt/validate",
+})
+
+
+@app.middleware("http")
+async def signed_request_boundary(request, call_next):
+    """Production private APIs require a signed owner, shell and durable nonce.
+
+    This is a server-to-server gate, not public login authentication.
+    Missing/invalid configuration fails closed; a shared bearer alone never
+    authorizes a user-scoped native request.
+    """
+    if not _is_production():
+        return await call_next(request)
+    path = request.url.path
+    if path in {"/docs", "/redoc", "/openapi.json"}:
+        return JSONResponse(status_code=404, content={"detail": "Not found"})
+    if request.method == "OPTIONS":
+        return await call_next(request)
+    protected_get = request.method == "GET" and (
+        path.startswith("/v1/") or path == "/model/info"
+    )
+    protected_post = request.method == "POST"
+    if request.method == "GET" and not protected_get:
+        return await call_next(request)
+    if not (protected_get or protected_post):
+        return JSONResponse(status_code=405, content={"detail": "Unsupported method"})
+    if request.url.query:
+        return JSONResponse(status_code=400, content={"detail": "Unsigned query forbidden"})
+    if not _service_tokens():
+        return JSONResponse(status_code=503, content={"detail": "Service auth unavailable"})
+    if not signing_enabled():
+        return JSONResponse(status_code=503, content={"detail": "Signed request admission required"})
+    authorization = request.headers.get("authorization", "")
+    supplied = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
+    if not any(_token_matches(supplied, token) for token in _service_tokens()):
+        return JSONResponse(status_code=401, content={"detail": "Authentication required"})
+    try:
+        stated = request.headers.get("content-length")
+        if stated is not None and (not stated.isascii() or not stated.isdigit()):
+            return JSONResponse(status_code=400, content={"detail": "Invalid content length"})
+        if stated is not None and int(stated) > MAX_SIGNED_BODY_BYTES:
+            return JSONResponse(status_code=413, content={"detail": "Request too large"})
+        parts = []
+        size = 0
+        async for part in request.stream():
+            size += len(part)
+            if size > MAX_SIGNED_BODY_BYTES:
+                return JSONResponse(status_code=413, content={"detail": "Request too large"})
+            parts.append(part)
+        body = b"".join(parts)
+        request._body = body
+        payload = {} if not body else json.loads(body)
+        if not isinstance(payload, dict):
+            raise InvalidEnvelope("Expected JSON object")
+        config = load_signing_configuration()
+        store = replay_nonce_store(config[2])
+        identity = await asyncio.to_thread(
+            check_http_envelope, request.headers, payload,
+            config=config, nonce_store=store,
+            method=request.method, path=path,
+        )
+        if path in _SHELL_BOUND_PATHS and payload.get("shell") != identity["shell"]:
+            raise InvalidEnvelope("Explicit matching shell required")
+        if payload.get("shell") is not None and payload["shell"] != identity["shell"]:
+            raise InvalidEnvelope("Shell mismatch")
+        if identity["shell"] in {"core", "creation"}:
+            raise InvalidEnvelope("Tier cannot act as a shell")
+        if identity["shell"] not in {shell.value for shell in Shell}:
+            raise InvalidEnvelope("Unknown signed shell")
+        if path == "/v1/memory/candidates" and identity["shell"] != "ap":
+            raise InvalidEnvelope("AP-only memory route")
+        if path.startswith("/v1/actions/catalog/") and path.rsplit("/", 1)[-1] != identity["shell"]:
+            raise InvalidEnvelope("Catalog shell mismatch")
+        # Only the explicit service readiness principal may omit a real user
+        # identity. It has no access to inference or user data routes.
+        if identity["subject"] == "service:readiness":
+            if path != "/v1/readiness" or request.method != "GET":
+                raise InvalidEnvelope("Service readiness principal is diagnostic-only")
+        else:
+            subject = identity["subject"]
+            canonical = subject[5:] if subject.startswith("user:") else subject
+            if (not canonical.isascii() or not canonical.isdigit()
+                or canonical.startswith("0") or int(canonical) <= 0
+                or len(canonical) > 16 or str(int(canonical)) != canonical):
+                raise InvalidEnvelope("Unverified account subject")
+        request.state.signed_identity = identity
+    except (InvalidEnvelope, ValueError, TypeError):
+        return JSONResponse(status_code=401, content={"detail": "Invalid signed request"})
+    except Exception:
+        return JSONResponse(status_code=503, content={"detail": "Signed request verification unavailable"})
+    return await call_next(request)
 
 
 @app.middleware("http")
