@@ -29,7 +29,7 @@ def report(age_days=0, profile="pro_v231", model_sha=None):
 class ReleaseReadinessTests(unittest.TestCase):
     def test_model_loaded_without_evidence_is_not_qualified(self):
         with patch.dict(os.environ, {}, clear=True):
-            self.assertFalse(any(evaluate_release_gates(MODEL, PROFILE).values()))
+            self.assertFalse(any(evaluate_release_gates(MODEL, PROFILE, signed_admission_active=True).values()))
 
     def test_operator_review_and_pinned_evidence_all_required(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -42,14 +42,16 @@ class ReleaseReadinessTests(unittest.TestCase):
                 "AERYNZA_NATIVE_RELEASE_EVIDENCE_SHA256": hashlib.sha256(raw).hexdigest(),
             }
             with patch.dict(os.environ, env, clear=True):
-                self.assertTrue(all(evaluate_release_gates(MODEL, PROFILE).values()))
-                self.assertFalse(any(evaluate_release_gates({"ready": False, "profile": "pro_v231"}, PROFILE).values()))
-                self.assertFalse(any(evaluate_release_gates({"ready": True, "profile": "starter"}, PROFILE).values()))
+                self.assertFalse(any(evaluate_release_gates(MODEL, PROFILE).values()),
+                                 "Shared-bearer runtime cannot self-certify even with a signed evidence report")
+                self.assertTrue(all(evaluate_release_gates(MODEL, PROFILE, signed_admission_active=True).values()))
+                self.assertFalse(any(evaluate_release_gates({"ready": False, "profile": "pro_v231"}, PROFILE, signed_admission_active=True).values()))
+                self.assertFalse(any(evaluate_release_gates({"ready": True, "profile": "starter"}, PROFILE, signed_admission_active=True).values()))
                 os.environ["ASCENSION_VERIFY_MODEL_ON_BOOT"] = "0"
-                self.assertFalse(any(evaluate_release_gates(MODEL, PROFILE).values()))
+                self.assertFalse(any(evaluate_release_gates(MODEL, PROFILE, signed_admission_active=True).values()))
                 os.environ.pop("ASCENSION_VERIFY_MODEL_ON_BOOT")
                 os.environ["AERYNZA_NATIVE_RELEASE_EVIDENCE_SHA256"] = "b" * 64
-                self.assertFalse(any(evaluate_release_gates(MODEL, PROFILE).values()))
+                self.assertFalse(any(evaluate_release_gates(MODEL, PROFILE, signed_admission_active=True).values()))
 
     def test_missing_gate_or_false_claim_cannot_be_promoted(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -65,7 +67,7 @@ class ReleaseReadinessTests(unittest.TestCase):
                 "AERYNZA_NATIVE_RELEASE_EVIDENCE_SHA256": hashlib.sha256(raw).hexdigest(),
             }
             with patch.dict(os.environ, env, clear=True):
-                gates = evaluate_release_gates(MODEL, PROFILE)
+                gates = evaluate_release_gates(MODEL, PROFILE, signed_admission_active=True)
                 self.assertFalse(gates["shell_isolation"])
                 self.assertFalse(gates["interactive_latency"])
                 self.assertTrue(gates["conversation_quality"])
@@ -83,7 +85,7 @@ class ReleaseReadinessTests(unittest.TestCase):
                         "AERYNZA_NATIVE_RELEASE_EVIDENCE_SHA256": hashlib.sha256(raw).hexdigest(),
                     }
                     with patch.dict(os.environ, env, clear=True):
-                        self.assertFalse(any(evaluate_release_gates(MODEL, PROFILE).values()))
+                        self.assertFalse(any(evaluate_release_gates(MODEL, PROFILE, signed_admission_active=True).values()))
 
 
 if __name__ == "__main__":
