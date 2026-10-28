@@ -1,0 +1,58 @@
+[
+  {
+    "id": "decimal-and-exponents",
+    "payload": {
+      "shell": "ap",
+      "temperature": 0.65,
+      "context": {
+        "small": 1e-7,
+        "threshold": 0.000001,
+        "whole": 1,
+        "zero": 0,
+        "values": [
+          true,
+          false,
+          null,
+          "line\né"
+        ]
+      }
+    },
+    "canonical": "{\"context\":{\"small\":1e-7,\"threshold\":0.000001,\"values\":[true,false,null,\"line\\né\"],\"whole\":1,\"zero\":0},\"shell\":\"ap\",\"temperature\":0.65}"
+  },
+  {
+    "id": "numeric-object-keys",
+    "payload": {
+      "shell": "ap",
+      "context": {
+        "2": "two",
+        "10": "ten"
+      }
+    },
+    "canonical": "{\"context\":{\"10\":\"ten\",\"2\":\"two\"},\"shell\":\"ap\"}"
+  },
+  {
+    "id": "prototype-key",
+    "payload": {
+      "shell": "ap",
+      "context": {
+        "__proto__": {
+          "private": "retained"
+        }
+      }
+    },
+    "canonical": "{\"context\":{\"__proto__\":{\"private\":\"retained\"}},\"shell\":\"ap\"}"
+  },
+  {
+    "id": "unicode-order",
+    "payload": {
+      "shell": "ap",
+      "context": {
+        "": "bmp",
+        "𐀀": "astral",
+        "é": "accent"
+      }
+    },
+    "canonical": "{\"context\":{\"é\":\"accent\",\"𐀀\":\"astral\",\"\":\"bmp\"},\"shell\":\"ap\"}"
+  }
+]
+
