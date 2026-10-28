@@ -176,3 +176,21 @@ def test_unattended_streaming_cannot_bypass_native_priority_lock():
             asyncio.run(stream_intelligence(request, token="test-only"))
         assert result.value.status_code == 409
         assert result.value.headers["Retry-After"] == "2"
+
+def test_background_runtime_race_returns_409_not_provider_outage(monkeypatch):
+    import asyncio
+    from fastapi import HTTPException
+    from src.core.model_runtime import NativeInferenceQueueTimeout
+    monkeypatch.setattr(api, "require_idle_for_background", lambda _mode: None)
+    monkeypatch.setattr(api.runtime, "status", lambda: {"ready": True, "error": None})
+    def busy_model(**_kwargs):
+        raise NativeInferenceQueueTimeout("busy foreground")
+    monkeypatch.setattr(api, "respond", busy_model)
+    monkeypatch.setattr(api, "provider_routes_enabled", lambda: False)
+    request = api.IntelligenceRequest(messages=[
+        {"role": "user", "content": "Plan a private goal"}
+    ], mode="background")
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(api.intelligence(request, token="test-only"))
+    assert error.value.status_code == 409
+    assert error.value.headers["Retry-After"] == "2"
