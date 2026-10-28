@@ -211,3 +211,51 @@ def test_numeric_lifeos_account_subject_is_compatible(signed_service):
     with TestClient(api.app) as client:
         result = client.post("/v1/memory/candidates", json=body, headers=signed)
         assert result.status_code == 200, result.text
+
+
+def test_postgres_replay_rejects_privileged_or_unverified_identity(monkeypatch):
+    from src.serving import http_envelope
+    calls = []
+    class UnsafeReplay:
+        def __init__(self, url):
+            calls.append(("construct", url))
+        def preflight(self):
+            calls.append(("preflight", None))
+            raise RuntimeError("Replay database role is not properly isolated")
+    monkeypatch.setattr(http_envelope, "PostgresNonceStore", UnsafeReplay)
+    http_envelope.postgres_nonce_store.cache_clear()
+    try:
+        for _ in range(2):
+            with pytest.raises(RuntimeError, match="not properly isolated"):
+                http_envelope.replay_nonce_store(
+                    "postgresql://unprivileged:secret@localhost/aerynza"
+                )
+        assert [name for name, _ in calls] == [
+            "construct", "preflight", "construct", "preflight"
+        ]
+    finally:
+        http_envelope.postgres_nonce_store.cache_clear()
+
+
+def test_postgres_replay_preflight_runs_once_before_store_is_cached(monkeypatch):
+    from src.serving import http_envelope
+    calls = []
+    class ApprovedReplay:
+        def __init__(self, url):
+            self.url = url
+            calls.append("construct")
+        def preflight(self):
+            calls.append("preflight")
+    monkeypatch.setattr(http_envelope, "PostgresNonceStore", ApprovedReplay)
+    http_envelope.postgres_nonce_store.cache_clear()
+    try:
+        first = http_envelope.replay_nonce_store(
+            "postgresql://replay_writer:secret@localhost/aerynza"
+        )
+        second = http_envelope.replay_nonce_store(
+            "postgresql://replay_writer:secret@localhost/aerynza"
+        )
+        assert first is second
+        assert calls == ["construct", "preflight"]
+    finally:
+        http_envelope.postgres_nonce_store.cache_clear()
