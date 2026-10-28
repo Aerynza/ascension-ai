@@ -99,6 +99,7 @@ from src.core.cognition import TALENTS, build_action_execution_contract, build_c
 from src.core.contracts import Shell, Tier
 from src.core.media_executor import generate_image, parse_image_request
 from src.core.model_runtime import ModelRamBudgetExceeded, NativeInferenceQueueTimeout, runtime
+from src.core.release_readiness import REQUIRED_RELEASE_GATES, evaluate_release_gates
 from src.financial.plaid_client import get_balances, parse_balance_query
 from src.core.orchestrator import deterministic_response, prepare_inference, respond, scope_context, surface_plan
 from src.core.safety import medical_emergency_response
@@ -112,11 +113,12 @@ PUBLIC = ROOT / "public"
 APP_VERSION = "2.3.2-native-production"
 MAX_MESSAGES = 24
 MAX_MESSAGE_LENGTH = 12_000
-RELEASE_READY_PROFILES = {"pro_v231"}
+def native_release_gate_status() -> dict[str, bool]:
+    return evaluate_release_gates(runtime.status(), runtime.profile)
 
 
 def production_replacement_enabled() -> bool:
-    return runtime.profile_name in RELEASE_READY_PROFILES and bool(runtime.status()["ready"])
+    return all(native_release_gate_status().values())
 
 
 @asynccontextmanager
@@ -409,7 +411,7 @@ async def capabilities_page() -> FileResponse:
 @app.get("/health")
 async def health() -> dict:
     model = runtime.status()
-    replacement_ready = model["profile"] in RELEASE_READY_PROFILES and bool(model["ready"])
+    replacement_ready = production_replacement_enabled()
     return {
         "status": "healthy" if model["ready"] else "loading_or_degraded",
         "version": APP_VERSION,
@@ -427,27 +429,17 @@ async def health() -> dict:
 
 @app.get("/v1/readiness")
 async def replacement_readiness(_: None = Depends(require_access)) -> dict:
-    required_gates = [
-        "conversation_quality", "shell_isolation", "action_integrity",
-        "domain_reasoning", "safety_privacy", "interactive_latency",
-        "concurrency_recovery", "native_primary_canary",
-    ]
-    ready = production_replacement_enabled()
+    gates = native_release_gate_status()
+    ready = all(gates.values())
     return {
         "candidate_ready": runtime.status()["ready"],
         "replacement_ready": ready,
-        "evaluation_suite": "replacement_readiness_prompts_v1",
-        "evaluation_cases": 20,
-        "required_gates": required_gates,
-        "gates": {gate: ready for gate in required_gates},
+        "required_gates": list(REQUIRED_RELEASE_GATES),
+        "gates": gates,
         "evidence": {
-            "raw_capability_execution": "628/640",
-            "canonical": "6/6",
-            "integrated_receipt_truth": "8/8",
-            "replacement_quality": "19/20",
-            "runtime_guards": ["medical_emergency", "release_critical_capabilities"],
-        } if ready else {},
-        "promotion_rule": "Every gate must pass before outside-model fallback is removed.",
+            "status": "operator_approved_checkpoint_bound_report" if ready else "not_fully_verified",
+        },
+        "promotion_rule": "A loaded model is not evidence of production replacement readiness; each gate requires a fresh, pinned and operator-approved report.",
         "runtime": runtime.status(),
     }
 
