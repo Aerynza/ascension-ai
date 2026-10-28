@@ -62,10 +62,12 @@ class PostgresNonceStore:
         with connector(self._database_url, connect_timeout=3, sslmode="require") as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                    SELECT NOT (r.rolsuper OR r.rolbypassrls OR r.rolcreaterole),
+                    SELECT NOT (r.rolsuper OR r.rolbypassrls OR r.rolcreaterole
+                                OR r.rolcreatedb OR r.rolreplication),
                            has_schema_privilege(current_user, 'aerynza_ai_security', 'USAGE'),
                            has_table_privilege(current_user, 'aerynza_ai_security.signed_request_nonces', 'INSERT'),
-                           has_table_privilege(current_user, 'aerynza_ai_security.signed_request_nonces', 'SELECT')
+                           has_table_privilege(current_user, 'aerynza_ai_security.signed_request_nonces', 'SELECT'),
+                           has_table_privilege(current_user, 'aerynza_ai_security.signed_request_nonces', 'DELETE')
                     FROM pg_roles r WHERE r.rolname = current_user
                 """)
                 permissions = cur.fetchone()
