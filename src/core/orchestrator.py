@@ -686,7 +686,9 @@ def respond(*, shell: Shell, tier: Tier, messages: list[dict], context: dict, su
         **result,
         **{key: value for key, value in prepared.items() if key != "messages"},
         "outside_provider": False,
-        "production_replacement_enabled": runtime.profile_name == "pro_v231" and bool(runtime.status()["ready"]),
+        # The orchestrator has no signed HTTP actor or release evidence.
+        # Only the authenticated API boundary may certify replacement status.
+        "production_replacement_enabled": False,
     }
 
 
