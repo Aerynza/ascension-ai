@@ -23,9 +23,14 @@ MAX_REPORT_BYTES = 262_144
 MAX_EVIDENCE_AGE = timedelta(days=30)
 
 
-def evaluate_release_gates(model: dict, profile: dict) -> dict[str, bool]:
+def evaluate_release_gates(model: dict, profile: dict, *, signed_admission_active: bool = False) -> dict[str, bool]:
     """Return per-gate verified values; no inputs means all gates closed."""
     closed = {name: False for name in REQUIRED_RELEASE_GATES}
+    # A reviewed model cannot replace AP while the native HTTP server still
+    # trusts a shared bearer with no verified per-user signed actor admission.
+    # Only a tested, installed middleware integration may supply True here.
+    if signed_admission_active is not True:
+        return closed
     if not model.get("ready") or model.get("profile") != "pro_v231":
         return closed
     if os.getenv("AERYNZA_NATIVE_REPLACEMENT_APPROVED") != "1":
