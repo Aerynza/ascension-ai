@@ -113,8 +113,12 @@ def redis_nonce_store(redis_url):
 @lru_cache(maxsize=2)
 def postgres_nonce_store(database_url):
     # One lightweight store per process. The database's primary key (not
-    # process memory) is the global anti-replay authority.
-    return PostgresNonceStore(database_url)
+    # process memory) is the global anti-replay authority. Preflight the
+    # dedicated account before caching it: a privileged or inaccessible role
+    # must never be accepted merely because it can insert into the ledger.
+    store = PostgresNonceStore(database_url)
+    store.preflight()
+    return store
 
 
 def replay_nonce_store(replay_url):
