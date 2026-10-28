@@ -31,6 +31,7 @@ def signed_service(monkeypatch):
     monkeypatch.setenv("ASCENSION_AI_SERVICE_TOKEN", "internal-service-secret")
     monkeypatch.setenv("ASCENSION_AI_TRUSTED_ISSUER", "aerynza-product")
     monkeypatch.setenv("ASCENSION_AI_SIGNING_KEY_ID", "current")
+    monkeypatch.setenv("ASCENSION_AI_SERVICE_SHELLS", "ap")
     monkeypatch.setenv("ASCENSION_AI_SIGNING_KEY_BASE64", base64.b64encode(key).decode())
     monkeypatch.setenv("ASCENSION_AI_REPLAY_REDIS_URL", "redis://unreachable.invalid/0")
     monkeypatch.delenv("ASCENSION_AI_REPLAY_POSTGRES_URL", raising=False)
@@ -170,3 +171,43 @@ def test_oversized_signed_payload_cannot_reach_handler(signed_service):
     with TestClient(api.app) as client:
         result = client.post("/v1/memory/candidates", json=body, headers=signed)
         assert result.status_code == 413
+
+
+def test_shell_not_in_deployment_allowlist_cannot_admit_user(signed_service, monkeypatch):
+    key, _ = signed_service
+    body = {"text": "private"}
+    signed = headers(body, key, nonce="shell-permission")
+    monkeypatch.setenv("ASCENSION_AI_SERVICE_SHELLS", "nexus_family")
+    with TestClient(api.app) as client:
+        result = client.post("/v1/memory/candidates", json=body, headers=signed)
+        assert result.status_code == 401
+
+
+def test_missing_or_invalid_shell_allowlist_fails_closed(signed_service, monkeypatch):
+    key, _ = signed_service
+    body = {"text": "private"}
+    for index, raw in enumerate(("", "ap,ap", "core", "unknown", "ap,")):
+        monkeypatch.setenv("ASCENSION_AI_SERVICE_SHELLS", raw)
+        signed = headers(body, key, nonce=f"bad-shells-{index}")
+        with TestClient(api.app) as client:
+            result = client.post("/v1/memory/candidates", json=body, headers=signed)
+            assert result.status_code == 503, (raw, result.status_code)
+
+
+def test_thesis_user_subject_cannot_be_cross_account(signed_service):
+    key, _ = signed_service
+    body = {"shell": "ap", "scope": "human", "subject_id": "user:18", "context": {}}
+    signed = headers(body, key, path="/v1/thesis", nonce="cross-user-thesis",
+                     subject="user:17")
+    with TestClient(api.app) as client:
+        result = client.post("/v1/thesis", json=body, headers=signed)
+        assert result.status_code == 401
+
+
+def test_numeric_lifeos_account_subject_is_compatible(signed_service):
+    key, _ = signed_service
+    body = {"text": "Never publish my private profile"}
+    signed = headers(body, key, subject="17", nonce="numeric-lifeos-user")
+    with TestClient(api.app) as client:
+        result = client.post("/v1/memory/candidates", json=body, headers=signed)
+        assert result.status_code == 200, result.text
