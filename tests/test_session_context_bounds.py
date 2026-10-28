@@ -164,3 +164,15 @@ def test_native_background_allows_idle_model_then_uses_existing_lock(monkeypatch
     })
     for mode in ("background", "proactive", "planning", "conversation"):
         api.require_idle_for_background(mode)
+
+
+def test_unattended_streaming_cannot_bypass_native_priority_lock():
+    import asyncio
+    from fastapi import HTTPException
+    from src.serving.api import IntelligenceRequest, stream_intelligence
+    for mode in ("background", "proactive"):
+        request = IntelligenceRequest(messages=[{"role": "user", "content": "Prepare privately"}], mode=mode)
+        with pytest.raises(HTTPException) as result:
+            asyncio.run(stream_intelligence(request, token="test-only"))
+        assert result.value.status_code == 409
+        assert result.value.headers["Retry-After"] == "2"
