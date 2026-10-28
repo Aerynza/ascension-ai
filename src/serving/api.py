@@ -182,6 +182,21 @@ app.mount("/static", StaticFiles(directory=str(PUBLIC)), name="static")
 
 
 MAX_SIGNED_BODY_BYTES = 1_048_576
+
+
+def production_service_shells() -> set[str]:
+    """An explicitly configured service may admit only reviewed AI shells."""
+    raw = os.getenv("ASCENSION_AI_SERVICE_SHELLS", "").strip()
+    if not raw:
+        raise RuntimeError("Production signed service shells are not configured")
+    selected = [part.strip().lower() for part in raw.split(",")]
+    allowed = {shell.value for shell in Shell}
+    if (not selected or any(not value or value not in allowed for value in selected)
+        or len(selected) != len(set(selected))):
+        raise RuntimeError("Invalid production signed shell allowlist")
+    return set(selected)
+
+
 _SHELL_BOUND_PATHS = frozenset({
     "/v1/intelligence", "/v1/stream", "/chat", "/v1/cognition",
     "/v1/agent/plan", "/v1/retrieve", "/v1/surface-plan",
@@ -254,8 +269,8 @@ async def signed_request_boundary(request, call_next):
             raise InvalidEnvelope("Shell mismatch")
         if identity["shell"] in {"core", "creation"}:
             raise InvalidEnvelope("Tier cannot act as a shell")
-        if identity["shell"] not in {shell.value for shell in Shell}:
-            raise InvalidEnvelope("Unknown signed shell")
+        if identity["shell"] not in production_service_shells():
+            raise InvalidEnvelope("Shell not authorized for this service")
         if path == "/v1/memory/candidates" and identity["shell"] != "ap":
             raise InvalidEnvelope("AP-only memory route")
         if path.startswith("/v1/actions/catalog/") and path.rsplit("/", 1)[-1] != identity["shell"]:
