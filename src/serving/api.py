@@ -120,7 +120,7 @@ def resolve_session_context(request, token: str) -> dict:
     return merged
 
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.responses import StreamingResponse, JSONResponse
@@ -568,8 +568,16 @@ async def health() -> dict:
 
 
 @app.get("/v1/readiness")
-async def replacement_readiness(_: None = Depends(require_access)) -> dict:
-    gates = native_release_gate_status()
+async def replacement_readiness(request: Request, _: str = Depends(require_access)) -> dict:
+    # These properties are true only after the upstream signed middleware
+    # verified the request and atomically consumed its nonce in the shared
+    # replay backend. Service bearer alone cannot produce this attestation.
+    identity = getattr(request.state, "signed_identity", None)
+    signed = bool(_is_production() and isinstance(identity, dict)
+                  and identity.get("issuer") and identity.get("subject"))
+    gates = evaluate_release_gates(
+        runtime.status(), runtime.profile, signed_admission_active=signed
+    )
     ready = all(gates.values())
     return {
         "candidate_ready": runtime.status()["ready"],
@@ -578,13 +586,10 @@ async def replacement_readiness(_: None = Depends(require_access)) -> dict:
         "outside_provider": False,
         "required_gates": list(REQUIRED_RELEASE_GATES),
         "gates": gates,
-        # The current native mainline does not install the reviewed signed
-        # user-actor middleware (see staged PR #7). Never substitute service
-        # bearer authentication for a verified account subject.
         "signed_actor_admission": {
-            "enforced": False,
-            "durable_replay_protection": False,
-            "account_subject_verified": False,
+            "enforced": signed,
+            "durable_replay_protection": signed,
+            "account_subject_verified": signed,
         },
         "evidence": {
             "status": "operator_approved_checkpoint_bound_report" if ready else "not_fully_verified",
