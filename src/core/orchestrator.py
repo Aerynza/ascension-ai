@@ -679,6 +679,7 @@ def respond(*, shell: Shell, tier: Tier, messages: list[dict], context: dict, su
         messages=prepared["messages"],
         temperature=temperature,
         max_tokens=max_tokens,
+        mode=mode,
     ))
     result["content"] = enforce_response_contract(result.get("content", ""), prepared["cognition"], context, mode, latest)
     return {
