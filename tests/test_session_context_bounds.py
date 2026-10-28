@@ -151,7 +151,7 @@ def test_native_background_yields_when_foreground_or_queue_is_busy(monkeypatch):
         for mode in ("background", "proactive"):
             with pytest.raises(HTTPException) as result:
                 api.require_idle_for_background(mode)
-            assert result.value.status_code == 503
+            assert result.value.status_code == 409
             assert result.value.headers["Retry-After"] == "2"
         # Interactive requests retain their normal queue admission path.
         api.require_idle_for_background("conversation")
