@@ -1024,6 +1024,13 @@ async def chat(request: IntelligenceRequest, token: str = Depends(require_access
 
 @app.post("/v1/stream")
 async def stream_intelligence(request: IntelligenceRequest, token: str = Depends(require_access)):
+    # Unattended jobs use the bounded non-streaming native route, where
+    # background lock admission is atomic. SSE has no resumption contract and
+    # must not bypass foreground-priority scheduling or retain a model lock.
+    if request.mode in {"background", "proactive"}:
+        raise HTTPException(status_code=409,
+                            detail="Unattended streaming disabled; use /v1/intelligence",
+                            headers={"Retry-After": "2"})
     require_idle_for_background(request.mode)
     context = resolve_session_context(request, token)
     emergency = medical_emergency_response(request.messages[-1].content)
