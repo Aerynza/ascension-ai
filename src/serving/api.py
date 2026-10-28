@@ -190,7 +190,8 @@ def production_service_shells() -> set[str]:
     if not raw:
         raise RuntimeError("Production signed service shells are not configured")
     selected = [part.strip().lower() for part in raw.split(",")]
-    allowed = {shell.value for shell in Shell}
+    # Core and Creation are tier/workspace concepts, not trusted principals.
+    allowed = {shell.value for shell in Shell} - {"core", "creation"}
     if (not selected or any(not value or value not in allowed for value in selected)
         or len(selected) != len(set(selected))):
         raise RuntimeError("Invalid production signed shell allowlist")
