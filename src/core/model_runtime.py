@@ -201,18 +201,33 @@ class NativeModelRuntime:
             "queue": queue,
         }
 
-    def chat(self, messages: list[dict], temperature: float, max_tokens: int) -> dict:
+    def chat(self, messages: list[dict], temperature: float, max_tokens: int,
+             mode: str = "conversation") -> dict:
         if self.model is None:
             raise RuntimeError(self.load_error or "Native model is not loaded.")
         started = time.perf_counter()
         queued_at = started
         inference_messages = self._prepare_messages(messages)
-        dequeued = False
+        unattended = mode in {"background", "proactive"}
+        # An unattended model turn cannot queue in front of a foreground AP
+        # response. These counters are advisory; the lock acquisition below
+        # is the actual atomic admission boundary.
         with self.metrics_lock:
+            if unattended and (self.queue_depth > 0 or self.active_requests > 0):
+                raise NativeInferenceQueueTimeout("Native background yielded to foreground")
             self.queue_depth += 1
+        dequeued = False
         try:
-            if not self.lock.acquire(timeout=self.queue_timeout_seconds):
-                raise NativeInferenceQueueTimeout("Native inference queue timeout")
+            acquired = (
+                self.lock.acquire(blocking=False)
+                if unattended
+                else self.lock.acquire(timeout=self.queue_timeout_seconds)
+            )
+            if not acquired:
+                raise NativeInferenceQueueTimeout(
+                    "Native background yielded to foreground"
+                    if unattended else "Native inference queue timeout"
+                )
             dequeued = True
             inference_started = time.perf_counter()
             queue_wait_ms = round((inference_started - queued_at) * 1000)
@@ -231,6 +246,33 @@ class NativeModelRuntime:
                     repeat_penalty=1.08,
                     stop=["<|im_end|>", "<|endoftext|>"],
                 )
+                content = self._clean_content(
+                    str(result.get("choices", [{}])[0].get("message", {}).get("content", ""))
+                )
+                usage = result.get("usage") or {}
+                if not content:
+                    # Never run raw fallback outside the same per-model
+                    # inference lock: llama.cpp is shared between accounts.
+                    last_user = ""
+                    for message in reversed(inference_messages):
+                        if message.get("role") == "user":
+                            last_user = str(message.get("content", "")).strip()
+                            break
+                    prompt = f"User: {last_user}\nAssistant:"
+                    raw_result = self.model.create_completion(
+                        prompt=prompt,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        top_p=0.9,
+                        repeat_penalty=1.08,
+                        stop=["\n", "User:", "Assistant:", "<|endoftext|>"],
+                    )
+                    content = self._clean_content(
+                        str(raw_result.get("choices", [{}])[0].get("text", ""))
+                    )
+                    usage = raw_result.get("usage") or usage
+                if not content:
+                    raise RuntimeError("Native model returned an empty response.")
                 inference_ms = round((time.perf_counter() - inference_started) * 1000)
                 with self.metrics_lock:
                     self.completed_requests += 1
@@ -247,38 +289,11 @@ class NativeModelRuntime:
                     self.timeout_requests += 1
                 self.failed_requests += 1
             raise
-        content = self._clean_content(
-            str(result.get("choices", [{}])[0].get("message", {}).get("content", ""))
-        )
-        if not content:
-            # Some converted/merged GGUFs do not apply the chat template correctly
-            # through create_chat_completion. Fall back to a raw completion on the
-            # last user turn, which the base Qwen3 model and the merged v16 full
-            # model both follow.
-            last_user = ""
-            for message in reversed(inference_messages):
-                if message.get("role") == "user":
-                    last_user = str(message.get("content", "")).strip()
-                    break
-            prompt = f"User: {last_user}\nAssistant:"
-            raw_result = self.model.create_completion(
-                prompt=prompt,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                top_p=0.9,
-                repeat_penalty=1.08,
-                stop=["\n", "User:", "Assistant:", "<|endoftext|>"],
-            )
-            content = self._clean_content(
-                str(raw_result.get("choices", [{}])[0].get("text", ""))
-            )
-        if not content:
-            raise RuntimeError("Native model returned an empty response.")
         return {
             "content": content,
             "model": self.profile.get("label") or self.profile_name,
             "provider": "ascension-native",
-            "usage": result.get("usage") or {},
+            "usage": usage,
             "latency_ms": round((time.perf_counter() - started) * 1000),
             "queue_wait_ms": queue_wait_ms,
             "inference_ms": inference_ms,

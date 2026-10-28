@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections import OrderedDict
+from copy import deepcopy
 import hashlib
 import hmac
 import json
@@ -17,9 +19,12 @@ from typing import Literal
 
 SESSIONS = set()
 KEYRING_SERVICE = "Aerynza AI"
-SESSION_CONTEXTS: dict[str, dict] = {}
+# Bounded, ephemeral inference cache. Durable personal data belongs in LifeOS.
+SESSION_CONTEXTS: OrderedDict[str, tuple[float, dict]] = OrderedDict()
 _SESSION_LOCK = Lock()
 MAX_SESSION_CONTEXT_BYTES = 200_000
+MAX_ACTIVE_SESSION_CONTEXTS = 128
+SESSION_CONTEXT_TTL_SECONDS = 3600
 
 
 def _session_key(session_id: str, token: str) -> str:
@@ -40,26 +45,50 @@ def _strip_provider_keys(value):
     return value
 
 
+def _expire_session_contexts(now: float) -> None:
+    """Caller holds _SESSION_LOCK; purge inactive sessions before reads/writes."""
+    for key, (expires, _) in list(SESSION_CONTEXTS.items()):
+        if expires <= now:
+            SESSION_CONTEXTS.pop(key, None)
+
+
 def get_session_context(session_id: str, token: str) -> dict:
+    # A shared service bearer is NOT an end-user identity. Native session
+    # persistence is disabled in production until signed actor admission lands.
+    if _is_production():
+        raise HTTPException(status_code=403, detail="Native session persistence is unavailable")
     if not session_id or not token:
         return {}
     key = _session_key(session_id, token)
     with _SESSION_LOCK:
-        return SESSION_CONTEXTS.get(key, {}).copy()
+        _expire_session_contexts(time.monotonic())
+        item = SESSION_CONTEXTS.get(key)
+        if item is None:
+            return {}
+        SESSION_CONTEXTS.move_to_end(key)
+        return deepcopy(item[1])
 
 
 def set_session_context(session_id: str, context: dict, token: str, merge: bool = False) -> dict:
+    if _is_production():
+        raise HTTPException(status_code=403, detail="Native session persistence is unavailable")
     if not session_id or not token:
         return _strip_provider_keys(context)
     safe_context = _strip_provider_keys(context)
     key = _session_key(session_id, token)
     with _SESSION_LOCK:
-        existing = SESSION_CONTEXTS.get(key, {}) if merge else {}
+        now = time.monotonic()
+        _expire_session_contexts(now)
+        item = SESSION_CONTEXTS.get(key)
+        existing = item[1] if merge and item is not None else {}
         merged = _merge_context(existing, safe_context)
         if len(json.dumps(merged, default=str)) > MAX_SESSION_CONTEXT_BYTES:
             raise ValueError("session context exceeds size limit")
-        SESSION_CONTEXTS[key] = merged
-    return merged
+        SESSION_CONTEXTS[key] = (now + SESSION_CONTEXT_TTL_SECONDS, deepcopy(merged))
+        SESSION_CONTEXTS.move_to_end(key)
+        while len(SESSION_CONTEXTS) > MAX_ACTIVE_SESSION_CONTEXTS:
+            SESSION_CONTEXTS.popitem(last=False)
+    return deepcopy(merged)
 
 
 def _merge_context(existing: dict, new: dict) -> dict:
@@ -75,7 +104,13 @@ def _merge_context(existing: dict, new: dict) -> dict:
 
 
 def resolve_session_context(request, token: str) -> dict:
-    """Merge persisted session context with request context; persist only when asked."""
+    """Merge persisted session context with request context; persist only when asked.
+
+    Production requests must carry fresh per-request context from LifeOS until
+    trusted actor-scoped and revocable native sessions are independently proven.
+    """
+    if _is_production() and (getattr(request, "session_id", None) or getattr(request, "persist_context", False)):
+        raise HTTPException(status_code=403, detail="Native session persistence is unavailable")
     if not getattr(request, "session_id", None):
         return request.context
     stored = get_session_context(request.session_id, token)
@@ -85,10 +120,10 @@ def resolve_session_context(request, token: str) -> dict:
     return merged
 
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
@@ -99,10 +134,13 @@ from src.core.cognition import TALENTS, build_action_execution_contract, build_c
 from src.core.contracts import Shell, Tier
 from src.core.media_executor import generate_image, parse_image_request
 from src.core.model_runtime import ModelRamBudgetExceeded, NativeInferenceQueueTimeout, runtime
+from src.core.release_readiness import REQUIRED_RELEASE_GATES, evaluate_release_gates
 from src.financial.plaid_client import get_balances, parse_balance_query
 from src.core.orchestrator import deterministic_response, prepare_inference, respond, scope_context, surface_plan
 from src.core.safety import medical_emergency_response
 from src.core.thesis import build_member_thesis_contribution, build_thesis
+from src.serving.http_envelope import signing_enabled, load_signing_configuration, check_http_envelope, replay_nonce_store
+from src.serving.envelope_validation import InvalidEnvelope
 from src.phone import android_bridge, iphone_bridge
 from src.windows import executor
 
@@ -112,11 +150,12 @@ PUBLIC = ROOT / "public"
 APP_VERSION = "2.3.2-native-production"
 MAX_MESSAGES = 24
 MAX_MESSAGE_LENGTH = 12_000
-RELEASE_READY_PROFILES = {"pro_v231"}
+def native_release_gate_status() -> dict[str, bool]:
+    return evaluate_release_gates(runtime.status(), runtime.profile)
 
 
 def production_replacement_enabled() -> bool:
-    return runtime.profile_name in RELEASE_READY_PROFILES and bool(runtime.status()["ready"])
+    return all(native_release_gate_status().values())
 
 
 @asynccontextmanager
@@ -137,9 +176,128 @@ app.add_middleware(
     allow_origins=allowed_origins,
     allow_credentials=False,
     allow_methods=["GET", "POST"],
-    allow_headers=["Authorization", "Content-Type"],
+    allow_headers=["Authorization", "Content-Type", "X-Aerynza-Envelope", "X-Aerynza-Signature"],
 )
 app.mount("/static", StaticFiles(directory=str(PUBLIC)), name="static")
+
+
+MAX_SIGNED_BODY_BYTES = 1_048_576
+
+
+def production_service_shells() -> set[str]:
+    """An explicitly configured service may admit only reviewed AI shells."""
+    raw = os.getenv("ASCENSION_AI_SERVICE_SHELLS", "").strip()
+    if not raw:
+        raise RuntimeError("Production signed service shells are not configured")
+    selected = [part.strip().lower() for part in raw.split(",")]
+    # Core and Creation are tier/workspace concepts, not trusted principals.
+    allowed = {shell.value for shell in Shell} - {"core", "creation"}
+    if (not selected or any(not value or value not in allowed for value in selected)
+        or len(selected) != len(set(selected))):
+        raise RuntimeError("Invalid production signed shell allowlist")
+    return set(selected)
+
+
+_SHELL_BOUND_PATHS = frozenset({
+    "/v1/intelligence", "/v1/stream", "/chat", "/v1/cognition",
+    "/v1/agent/plan", "/v1/retrieve", "/v1/surface-plan",
+    "/v1/relationships/feed", "/v1/session/data-panels", "/v1/thesis",
+    "/v1/thesis/contribution", "/v1/actions/receipt/validate",
+})
+
+
+@app.middleware("http")
+async def signed_request_boundary(request, call_next):
+    """Production private APIs require a signed owner, shell and durable nonce.
+
+    This is a server-to-server gate, not public login authentication.
+    Missing/invalid configuration fails closed; a shared bearer alone never
+    authorizes a user-scoped native request.
+    """
+    if not _is_production():
+        return await call_next(request)
+    path = request.url.path
+    if path in {"/docs", "/redoc", "/openapi.json"}:
+        return JSONResponse(status_code=404, content={"detail": "Not found"})
+    if request.method == "OPTIONS":
+        return await call_next(request)
+    protected_get = request.method == "GET" and (
+        path.startswith("/v1/") or path == "/model/info"
+    )
+    protected_post = request.method == "POST"
+    if request.method == "GET" and not protected_get:
+        return await call_next(request)
+    if not (protected_get or protected_post):
+        return JSONResponse(status_code=405, content={"detail": "Unsupported method"})
+    if request.url.query:
+        return JSONResponse(status_code=400, content={"detail": "Unsigned query forbidden"})
+    if not _service_tokens():
+        return JSONResponse(status_code=503, content={"detail": "Service auth unavailable"})
+    try:
+        active_signing = signing_enabled()
+    except (RuntimeError, ValueError):
+        return JSONResponse(status_code=503, content={"detail": "Signed request configuration invalid"})
+    if not active_signing:
+        return JSONResponse(status_code=503, content={"detail": "Signed request admission required"})
+    authorization = request.headers.get("authorization", "")
+    supplied = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
+    if not any(_token_matches(supplied, token) for token in _service_tokens()):
+        return JSONResponse(status_code=401, content={"detail": "Authentication required"})
+    try:
+        stated = request.headers.get("content-length")
+        if stated is not None and (not stated.isascii() or not stated.isdigit()):
+            return JSONResponse(status_code=400, content={"detail": "Invalid content length"})
+        if stated is not None and int(stated) > MAX_SIGNED_BODY_BYTES:
+            return JSONResponse(status_code=413, content={"detail": "Request too large"})
+        parts = []
+        size = 0
+        async for part in request.stream():
+            size += len(part)
+            if size > MAX_SIGNED_BODY_BYTES:
+                return JSONResponse(status_code=413, content={"detail": "Request too large"})
+            parts.append(part)
+        body = b"".join(parts)
+        request._body = body
+        payload = {} if not body else json.loads(body)
+        if not isinstance(payload, dict):
+            raise InvalidEnvelope("Expected JSON object")
+        config = load_signing_configuration()
+        store = replay_nonce_store(config[2])
+        identity = await asyncio.to_thread(
+            check_http_envelope, request.headers, payload,
+            config=config, nonce_store=store,
+            method=request.method, path=path,
+        )
+        if path in _SHELL_BOUND_PATHS and payload.get("shell") != identity["shell"]:
+            raise InvalidEnvelope("Explicit matching shell required")
+        if payload.get("shell") is not None and payload["shell"] != identity["shell"]:
+            raise InvalidEnvelope("Shell mismatch")
+        if identity["shell"] in {"core", "creation"}:
+            raise InvalidEnvelope("Tier cannot act as a shell")
+        if identity["shell"] not in production_service_shells():
+            raise InvalidEnvelope("Shell not authorized for this service")
+        if path == "/v1/memory/candidates" and identity["shell"] != "ap":
+            raise InvalidEnvelope("AP-only memory route")
+        if path.startswith("/v1/actions/catalog/") and path.rsplit("/", 1)[-1] != identity["shell"]:
+            raise InvalidEnvelope("Catalog shell mismatch")
+        # Only the explicit service readiness principal may omit a real user
+        # identity. It has no access to inference or user data routes.
+        if identity["subject"] == "service:readiness":
+            if path != "/v1/readiness" or request.method != "GET":
+                raise InvalidEnvelope("Service readiness principal is diagnostic-only")
+        else:
+            subject = identity["subject"]
+            canonical = subject[5:] if subject.startswith("user:") else subject
+            if (not canonical.isascii() or not canonical.isdigit()
+                or canonical.startswith("0") or int(canonical) <= 0
+                or len(canonical) > 16 or str(int(canonical)) != canonical):
+                raise InvalidEnvelope("Unverified account subject")
+        request.state.signed_identity = identity
+    except (InvalidEnvelope, ValueError, TypeError):
+        return JSONResponse(status_code=401, content={"detail": "Invalid signed request"})
+    except Exception:
+        return JSONResponse(status_code=503, content={"detail": "Signed request verification unavailable"})
+    return await call_next(request)
 
 
 @app.middleware("http")
@@ -333,11 +491,15 @@ def _env_flag(*names: str) -> bool:
 
 
 def device_routes_enabled() -> bool:
-    return _env_flag("AERYNZA_AI_ENABLE_DEVICE_ROUTES", "ASCENSION_AI_ENABLE_DEVICE_ROUTES")
+    # Direct standalone native actions have no verified LifeOS owner/consent.
+    # A mistaken environment flag must never enable unscoped production writes.
+    return not _is_production() and _env_flag("AERYNZA_AI_ENABLE_DEVICE_ROUTES", "ASCENSION_AI_ENABLE_DEVICE_ROUTES")
 
 
 def provider_routes_enabled() -> bool:
-    return _env_flag("AERYNZA_AI_ENABLE_PROVIDER_ROUTES", "ASCENSION_AI_ENABLE_PROVIDER_ROUTES")
+    # External billing, image and finance calls belong behind LifeOS owner,
+    # permission, and provider-receipt gates rather than a shared bearer.
+    return not _is_production() and _env_flag("AERYNZA_AI_ENABLE_PROVIDER_ROUTES", "ASCENSION_AI_ENABLE_PROVIDER_ROUTES")
 
 
 def require_device_routes() -> None:
@@ -370,6 +532,29 @@ def require_access(authorization: str | None = Header(default=None)) -> str:
 def require_native_ready() -> None:
     if not runtime.status()["ready"]:
         raise HTTPException(status_code=503, detail=runtime.status()["error"] or "Aerynza native model is not ready.")
+
+
+def require_idle_for_background(mode: str) -> None:
+    """Yield to interactive AP before starting unattended local generation.
+
+    Best-effort queue check: a durable foreground-priority dispatcher is still
+    required for production guarantees under simultaneous request races.
+    """
+    if mode not in {"background", "proactive"}:
+        return
+    state = runtime.status()
+    queue = state.get("queue", {})
+    if (not state.get("ready")
+        or type(queue.get("active_requests")) is not int
+        or type(queue.get("queue_depth")) is not int
+        or queue["active_requests"] > 0 or queue["queue_depth"] > 0
+        or queue["active_requests"] < 0 or queue["queue_depth"] < 0
+        or queue.get("inference_hung") is True):
+        raise HTTPException(
+            status_code=409,
+            detail="Native background AI yielded to interactive work",
+            headers={"Retry-After": "2"},
+        )
 
 
 def effective_max_tokens(requested: int, mode: str = "conversation") -> int:
@@ -409,7 +594,7 @@ async def capabilities_page() -> FileResponse:
 @app.get("/health")
 async def health() -> dict:
     model = runtime.status()
-    replacement_ready = model["profile"] in RELEASE_READY_PROFILES and bool(model["ready"])
+    replacement_ready = production_replacement_enabled()
     return {
         "status": "healthy" if model["ready"] else "loading_or_degraded",
         "version": APP_VERSION,
@@ -426,28 +611,33 @@ async def health() -> dict:
 
 
 @app.get("/v1/readiness")
-async def replacement_readiness(_: None = Depends(require_access)) -> dict:
-    required_gates = [
-        "conversation_quality", "shell_isolation", "action_integrity",
-        "domain_reasoning", "safety_privacy", "interactive_latency",
-        "concurrency_recovery", "native_primary_canary",
-    ]
-    ready = production_replacement_enabled()
+async def replacement_readiness(request: Request, _: str = Depends(require_access)) -> dict:
+    # These properties are true only after the upstream signed middleware
+    # verified the request and atomically consumed its nonce in the shared
+    # replay backend. Service bearer alone cannot produce this attestation.
+    identity = getattr(request.state, "signed_identity", None)
+    signed = bool(_is_production() and isinstance(identity, dict)
+                  and identity.get("issuer") and identity.get("subject"))
+    gates = evaluate_release_gates(
+        runtime.status(), runtime.profile, signed_admission_active=signed
+    )
+    ready = all(gates.values())
     return {
         "candidate_ready": runtime.status()["ready"],
         "replacement_ready": ready,
-        "evaluation_suite": "replacement_readiness_prompts_v1",
-        "evaluation_cases": 20,
-        "required_gates": required_gates,
-        "gates": {gate: ready for gate in required_gates},
+        "native_inference_only": not provider_routes_enabled(),
+        "outside_provider": False,
+        "required_gates": list(REQUIRED_RELEASE_GATES),
+        "gates": gates,
+        "signed_actor_admission": {
+            "enforced": signed,
+            "durable_replay_protection": signed,
+            "account_subject_verified": signed,
+        },
         "evidence": {
-            "raw_capability_execution": "628/640",
-            "canonical": "6/6",
-            "integrated_receipt_truth": "8/8",
-            "replacement_quality": "19/20",
-            "runtime_guards": ["medical_emergency", "release_critical_capabilities"],
-        } if ready else {},
-        "promotion_rule": "Every gate must pass before outside-model fallback is removed.",
+            "status": "operator_approved_checkpoint_bound_report" if ready else "not_fully_verified",
+        },
+        "promotion_rule": "A loaded model is not evidence of production replacement readiness; each gate requires a fresh, pinned and operator-approved report.",
         "runtime": runtime.status(),
     }
 
@@ -726,6 +916,7 @@ async def relationships_feed(request: RelationshipFeedRequest, token: str = Depe
 
 @app.post("/v1/intelligence")
 async def intelligence(request: IntelligenceRequest, token: str = Depends(require_access)) -> dict:
+    require_idle_for_background(request.mode)
     context = resolve_session_context(request, token)
     emergency = medical_emergency_response(request.messages[-1].content)
     if emergency:
@@ -814,6 +1005,11 @@ async def intelligence(request: IntelligenceRequest, token: str = Depends(requir
             max_tokens=effective_max_tokens(request.max_tokens, request.mode),
         )
     except NativeInferenceQueueTimeout as error:
+        # A voluntary background yield is not a broken native model; do not
+        # trip LifeOS's provider outage circuit and delay foreground AP.
+        if request.mode in {"background", "proactive"}:
+            raise HTTPException(status_code=409, detail="Native background yielded to interactive work",
+                                headers={"Retry-After": "2"}) from error
         raise HTTPException(status_code=504, detail=str(error)) from error
     except RuntimeError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
@@ -828,6 +1024,14 @@ async def chat(request: IntelligenceRequest, token: str = Depends(require_access
 
 @app.post("/v1/stream")
 async def stream_intelligence(request: IntelligenceRequest, token: str = Depends(require_access)):
+    # Unattended jobs use the bounded non-streaming native route, where
+    # background lock admission is atomic. SSE has no resumption contract and
+    # must not bypass foreground-priority scheduling or retain a model lock.
+    if request.mode in {"background", "proactive"}:
+        raise HTTPException(status_code=409,
+                            detail="Unattended streaming disabled; use /v1/intelligence",
+                            headers={"Retry-After": "2"})
+    require_idle_for_background(request.mode)
     context = resolve_session_context(request, token)
     emergency = medical_emergency_response(request.messages[-1].content)
     if emergency:
@@ -1058,10 +1262,9 @@ class LoginRequest(BaseModel):
 
 @app.post("/v1/login")
 async def login(request: LoginRequest) -> dict:
-    """Authenticate with email and password stored in Windows Credential Manager.
-
-    The resulting lab session does not authorize service routes.
-    """
+    """Authenticate with local lab credentials only outside production."""
+    if _is_production():
+        raise HTTPException(status_code=404, detail="Not found")
     import keyring
     stored = keyring.get_password(KEYRING_SERVICE, request.email)
     if not stored or not hmac.compare_digest(stored, request.password):
