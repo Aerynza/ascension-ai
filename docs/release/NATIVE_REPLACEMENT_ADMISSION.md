@@ -3,14 +3,30 @@
 The native service can load a model without proving that it is an acceptable
 replacement for a provider-backed AP. **Candidate ready != replacement ready.**
 
-**Current hard stop:** The main native HTTP service still accepts shared
-service bearer credentials without a verified signed end-user actor. The
-release gate deliberately evaluates to false even if an operator submits a
-passing report. Future integration of reviewed signed request middleware must
-explicitly supply its verified operational state to the gate; toggling an env
-variable or copying an evidence report is insufficient. Work from the staged
-signed-admission PR #7, and prove distributed replay, shell and user binding.
+**Staged, not deployed:** This draft now installs HMAC-signed HTTP admission,
+user-and-shell validation, bounded request bodies, and an atomic PostgreSQL or
+Redis nonce authority using the audited primitives from signed-admission
+PR #7. Every private production request requires BOTH the service bearer
+and a valid signed envelope; the public health route never certifies user
+privacy or model replacement. Staging and production must configure
+`ASCENSION_AI_REQUIRE_SIGNED_REQUESTS=true`,
+`ASCENSION_AI_SERVICE_SHELLS`, the shared trusted issuer and signing key,
+and exactly one durable nonce backend. The signed admission endpoint marks
+its fields true **only after** a real verified request and nonce claim.
+The live native deployment still runs an older commit without these changes.
 
+LifeOS already contains the nonce-ledger and dedicated NOLOGIN holder-role
+migrations, but migration execution and a least-privilege login credential
+must be confirmed separately. Follow
+`docs/security/POSTGRES_REPLAY_RUNBOOK.md` and do not share or reuse the
+application's administrative database credentials.
+
+**Remaining release HOLD:** No production promotion before signed LifeOS
+integration, two isolated staging accounts, revoked-user and nonce-replay
+testing, accessible private replay backend, load/queue recovery, and all
+checkpoint-bound quality and safety evidence. The native-only background
+cost fence in LifeOS PR #277 has not passed its full CI checks, so unattended
+AI traffic remains disabled.
 
 `/health` reports model load separately from `replacement_ready`; authenticated
 `/v1/readiness` reports each actual evidence gate. Both must remain false by
