@@ -48,6 +48,26 @@ class ReleaseReadinessTests(unittest.TestCase):
             self.assertFalse(production["outside_provider"])
             self.assertFalse(production["signed_actor_admission"]["enforced"])
 
+    def test_orchestrator_never_self_certifies_model_load_without_signed_actor(self):
+        from src.core import orchestrator
+        from src.core.contracts import Shell, Tier
+        with patch.object(orchestrator, "prepare_inference", return_value={
+            "messages": [{"role": "user", "content": "Personal question"}],
+            "cognition": {},
+            "shell": "ap",
+        }), patch.object(orchestrator, "deterministic_response", return_value="Native draft"), \
+                patch.object(orchestrator, "enforce_response_contract", side_effect=lambda content, *_args: content), \
+                patch.object(orchestrator.runtime, "profile_name", "pro_v231"), \
+                patch.object(orchestrator.runtime, "status", return_value={"ready": True}):
+            result = orchestrator.respond(
+                shell=Shell.AP, tier=Tier.LIFE_OS,
+                messages=[{"role": "user", "content": "Personal question"}],
+                context={}, surface="chat", mode="conversation",
+                allowed_capabilities=[], temperature=0.2, max_tokens=32,
+            )
+        self.assertEqual(result["content"], "Native draft")
+        self.assertIs(result["production_replacement_enabled"], False)
+
     def test_model_loaded_without_evidence_is_not_qualified(self):
         with patch.dict(os.environ, {}, clear=True):
             self.assertFalse(any(evaluate_release_gates(MODEL, PROFILE, signed_admission_active=True).values()))
