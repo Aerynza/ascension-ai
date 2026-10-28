@@ -53,6 +53,10 @@ def _expire_session_contexts(now: float) -> None:
 
 
 def get_session_context(session_id: str, token: str) -> dict:
+    # A shared service bearer is NOT an end-user identity. Native session
+    # persistence is disabled in production until signed actor admission lands.
+    if _is_production():
+        raise HTTPException(status_code=403, detail="Native session persistence is unavailable")
     if not session_id or not token:
         return {}
     key = _session_key(session_id, token)
@@ -66,6 +70,8 @@ def get_session_context(session_id: str, token: str) -> dict:
 
 
 def set_session_context(session_id: str, context: dict, token: str, merge: bool = False) -> dict:
+    if _is_production():
+        raise HTTPException(status_code=403, detail="Native session persistence is unavailable")
     if not session_id or not token:
         return _strip_provider_keys(context)
     safe_context = _strip_provider_keys(context)
@@ -98,7 +104,13 @@ def _merge_context(existing: dict, new: dict) -> dict:
 
 
 def resolve_session_context(request, token: str) -> dict:
-    """Merge persisted session context with request context; persist only when asked."""
+    """Merge persisted session context with request context; persist only when asked.
+
+    Production requests must carry fresh per-request context from LifeOS until
+    trusted actor-scoped and revocable native sessions are independently proven.
+    """
+    if _is_production() and (getattr(request, "session_id", None) or getattr(request, "persist_context", False)):
+        raise HTTPException(status_code=403, detail="Native session persistence is unavailable")
     if not getattr(request, "session_id", None):
         return request.context
     stored = get_session_context(request.session_id, token)
