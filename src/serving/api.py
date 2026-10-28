@@ -473,6 +473,8 @@ async def replacement_readiness(_: None = Depends(require_access)) -> dict:
     return {
         "candidate_ready": runtime.status()["ready"],
         "replacement_ready": ready,
+        "native_inference_only": not provider_routes_enabled(),
+        "outside_provider": False,
         "required_gates": list(REQUIRED_RELEASE_GATES),
         "gates": gates,
         # The current native mainline does not install the reviewed signed
