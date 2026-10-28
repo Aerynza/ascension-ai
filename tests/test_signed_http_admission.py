@@ -259,3 +259,16 @@ def test_postgres_replay_preflight_runs_once_before_store_is_cached(monkeypatch)
         assert calls == ["construct", "preflight"]
     finally:
         http_envelope.postgres_nonce_store.cache_clear()
+
+
+def test_malformed_signing_mode_produces_clean_503_without_auth_downgrade(monkeypatch):
+    monkeypatch.setenv("AERYNZA_AI_AUTH_MODE", "production")
+    monkeypatch.setenv("ASCENSION_AI_SERVICE_TOKEN", "internal-service-secret")
+    monkeypatch.setenv("ASCENSION_AI_REQUIRE_SIGNED_REQUESTS", "truee")
+    with TestClient(api.app) as client:
+        result = client.post(
+            "/v1/memory/candidates", json={"text": "private"},
+            headers={"Authorization": "Bearer internal-service-secret"}
+        )
+        assert result.status_code == 503
+        assert result.json() == {"detail": "Signed request configuration invalid"}
