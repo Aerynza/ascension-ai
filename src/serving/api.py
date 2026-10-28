@@ -370,11 +370,15 @@ def _env_flag(*names: str) -> bool:
 
 
 def device_routes_enabled() -> bool:
-    return _env_flag("AERYNZA_AI_ENABLE_DEVICE_ROUTES", "ASCENSION_AI_ENABLE_DEVICE_ROUTES")
+    # Direct standalone native actions have no verified LifeOS owner/consent.
+    # A mistaken environment flag must never enable unscoped production writes.
+    return not _is_production() and _env_flag("AERYNZA_AI_ENABLE_DEVICE_ROUTES", "ASCENSION_AI_ENABLE_DEVICE_ROUTES")
 
 
 def provider_routes_enabled() -> bool:
-    return _env_flag("AERYNZA_AI_ENABLE_PROVIDER_ROUTES", "ASCENSION_AI_ENABLE_PROVIDER_ROUTES")
+    # External billing, image and finance calls belong behind LifeOS owner,
+    # permission, and provider-receipt gates rather than a shared bearer.
+    return not _is_production() and _env_flag("AERYNZA_AI_ENABLE_PROVIDER_ROUTES", "ASCENSION_AI_ENABLE_PROVIDER_ROUTES")
 
 
 def require_device_routes() -> None:
@@ -1085,10 +1089,9 @@ class LoginRequest(BaseModel):
 
 @app.post("/v1/login")
 async def login(request: LoginRequest) -> dict:
-    """Authenticate with email and password stored in Windows Credential Manager.
-
-    The resulting lab session does not authorize service routes.
-    """
+    """Authenticate with local lab credentials only outside production."""
+    if _is_production():
+        raise HTTPException(status_code=404, detail="Not found")
     import keyring
     stored = keyring.get_password(KEYRING_SERVICE, request.email)
     if not stored or not hmac.compare_digest(stored, request.password):
