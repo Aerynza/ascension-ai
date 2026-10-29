@@ -17,7 +17,8 @@ from scripts.train_qwen_ascension_lora import load_curriculum
 from scripts.prepare_v256_gpu_bundle import MODEL, REVISION, DEFAULT_BUNDLE
 
 
-def select(output: Path, bundle: Path, *, requested: str = "auto",\n           parent_adapter: str | None = None) -> dict:
+def select(output: Path, bundle: Path, *, requested: str = "auto",
+           parent_adapter: str | None = None) -> dict:
     root = ROOT.resolve()
     out = (output if output.is_absolute() else root / output).resolve()
     data = (bundle if bundle.is_absolute() else root / bundle).resolve()
@@ -61,10 +62,12 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--bundle-dir", type=Path, default=DEFAULT_BUNDLE)
-    parser.add_argument("--checkpoint", default="auto")\n    parser.add_argument("--parent-adapter", default=None)
+    parser.add_argument("--checkpoint", default="auto")
+    parser.add_argument("--parent-adapter", default=None)
     parser.add_argument("--path-only", action="store_true")
     args = parser.parse_args()
-    selection = select(args.output_dir, args.bundle_dir, requested=args.checkpoint,\n                       parent_adapter=args.parent_adapter)
+    selection = select(args.output_dir, args.bundle_dir, requested=args.checkpoint,
+                       parent_adapter=args.parent_adapter)
     print(selection["checkpoint"] if args.path_only else json.dumps(selection, indent=2))
     return 0
 
