@@ -96,16 +96,24 @@ if [[ "$MODE" == "--train" ]]; then
 fi
 
 if [[ "$MODE" == "--resume" ]]; then
+  PARENT_ARGS=()
+  PARENT_SELECT=()
   if [[ -n "${AERYNZA_V256_PARENT_ADAPTER:-}" ]]; then
-    echo "[v256] BLOCKED: exact resume and parent-adapter stage selection are different." >&2
-    exit 9
+    if [[ "${AERYNZA_V256_PARENT_GATE_APPROVED:-}" != "YES" ||
+          ! -f "$AERYNZA_V256_PARENT_ADAPTER/adapter_config.json" ]]; then
+      echo "[v256] BLOCKED: exact resume needs the SAME reviewed parent adapter as this stage." >&2
+      exit 9
+    fi
+    PARENT_ARGS=(--resume-adapter "$AERYNZA_V256_PARENT_ADAPTER")
+    PARENT_SELECT=(--parent-adapter "$AERYNZA_V256_PARENT_ADAPTER")
   fi
   CKPT="$(python3 -m scripts.select_v256_exact_resume --output-dir "$OUTPUT" \
-          --bundle-dir "$BUNDLE" --checkpoint "${AERYNZA_V256_RESUME_CHECKPOINT:-auto}" --path-only)"
+          --bundle-dir "$BUNDLE" --checkpoint "${AERYNZA_V256_RESUME_CHECKPOINT:-auto}" \
+          "${PARENT_SELECT[@]}" --path-only)"
   echo "[v256] Exact resume checkpoint verified: $CKPT"
   CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}" python3 -u scripts/train_qwen_ascension_lora.py \
     --model "$MODEL" --model-revision "$REVISION" \
     --curriculum "$TRAIN" --eval-curriculum "$EVAL" --output-dir "$OUTPUT" \
     --epochs 1.0 --learning-rate 2e-6 --seed 3407 --max-length 1024 --save-steps 2 \
-    --resume-checkpoint "$CKPT"
+    "${PARENT_ARGS[@]}" --resume-checkpoint "$CKPT"
 fi
