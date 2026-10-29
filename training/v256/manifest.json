@@ -1,0 +1,67 @@
+{
+  "schema_version": "aerynza_v256_candidate_1",
+  "package_id": "v256_production_readiness",
+  "date": "2026-10-29",
+  "source_branch": "codex/p0-production-auth",
+  "status": "synthetic_candidate_pending_human_review_and_gpu_training",
+  "train_file": "training_packs/next_gpu/v256_production_readiness_train.jsonl",
+  "train_examples": 60,
+  "heldout_file": "training_packs/next_gpu/v256_production_readiness_heldout.jsonl",
+  "heldout_examples": 20,
+  "runtime_benchmark_file": "training_packs/next_gpu/v256_independent_execution_benchmarks.json",
+  "runtime_benchmark_specs": 20,
+  "skill_families": 20,
+  "full_gpu_compiler": "scripts/build_next_gpu_packs.py",
+  "expected_full_gpu_examples": 2286,
+  "expected_registered_capabilities": 640,
+  "expected_independent_supervised_cases": 80,
+  "model": {
+    "name": "Qwen/Qwen3-1.7B",
+    "revision": "70d244cc86ccca08cf5af4e1e306ecf908b1ad5e",
+    "license": "Apache-2.0",
+    "max_length": 1024
+  },
+  "method": {
+    "trainer": "scripts/train_qwen_ascension_lora.py",
+    "assistant_only_loss": true,
+    "balanced_package_shell_sampling": true,
+    "lora_rank": 16,
+    "lora_alpha": 32,
+    "learning_rate": 0.000002,
+    "epochs": 1,
+    "seed": 3407,
+    "save_steps": 2,
+    "require_cuda": true,
+    "min_vram_gib": 12,
+    "train_batch_size": 1,
+    "gradient_accumulation_steps": 8
+  },
+  "controls": {
+    "exact_resume_requires": [
+      "model weights",
+      "optimizer.pt",
+      "scheduler.pt",
+      "rng_state*.pth",
+      "trainer_state.json",
+      "matching dataset and config identity"
+    ],
+    "initialization_from_previous_adapter": "new_training_stage_not_exact_resume",
+    "checkpoint_persistence": "user-provisioned durable mount with separate backups required",
+    "no_auto_training": true,
+    "no_auto_retraining": true,
+    "no_auto_promotion": true,
+    "heldout_never_used_as_training": true,
+    "benchmark_runtime_fixtures_pending": true,
+    "independent_human_review_pending": true
+  },
+  "release_evidence": {
+    "registered_640_not_executable_proof": true,
+    "capabilities_with_production_receipts": null,
+    "model_quality_evaluation_run": false,
+    "unseen_runtime_task_evaluation_run": false,
+    "production_signing_and_privacy_e2e_verified": false,
+    "native_under_load_verified": false,
+    "comparison_against_reference_model_verified": false,
+    "production_replacement_ready": false
+  }
+}
