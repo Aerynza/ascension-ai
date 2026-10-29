@@ -9,6 +9,9 @@ on:
       - 'scripts/validate_v256_production_packs.py'
       - 'scripts/prepare_v256_gpu_bundle.py'
       - 'scripts/select_v256_exact_resume.py'
+      - 'scripts/validate_v256_production_parity.py'
+      - 'training/v256/**'
+      - 'tests/test_v256_production_parity.py'
       - 'scripts/launch_v256_production_readiness.sh'
       - 'tests/test_v256_training_packages.py'
       - '.github/workflows/v256-gpu-training-preflight.yml'
@@ -32,6 +35,7 @@ jobs:
       - name: Check new training scripts compile
         run: |
           python3 -m py_compile scripts/validate_v256_production_packs.py
+          python3 -m py_compile scripts/validate_v256_production_parity.py
           python3 -m py_compile scripts/prepare_v256_gpu_bundle.py
           python3 -m py_compile scripts/select_v256_exact_resume.py
           python3 -m py_compile scripts/build_next_gpu_packs.py
@@ -45,6 +49,10 @@ jobs:
           python3 -m unittest discover -s tests -p 'test_v255_production_parity.py' -v
       - name: Reject prompt leakage and incomplete production capability lessons
         run: python3 -m scripts.validate_v256_production_packs
+      - name: Audit 30 production surfaces and deny false 640 capability certification
+        run: |
+          python3 -m scripts.validate_v256_production_parity
+          python3 -m unittest discover -s tests -p 'test_v256_production_parity.py' -v
       - name: Build and verify immutable training and independent evaluation files
         run: python3 -m scripts.prepare_v256_gpu_bundle --build
       - name: Run negative controls for training and full-state resume
