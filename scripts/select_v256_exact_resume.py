@@ -17,7 +17,7 @@ from scripts.train_qwen_ascension_lora import load_curriculum
 from scripts.prepare_v256_gpu_bundle import MODEL, REVISION, DEFAULT_BUNDLE
 
 
-def select(output: Path, bundle: Path, *, requested: str = "auto") -> dict:
+def select(output: Path, bundle: Path, *, requested: str = "auto",\n           parent_adapter: str | None = None) -> dict:
     root = ROOT.resolve()
     out = (output if output.is_absolute() else root / output).resolve()
     data = (bundle if bundle.is_absolute() else root / bundle).resolve()
@@ -28,7 +28,7 @@ def select(output: Path, bundle: Path, *, requested: str = "auto") -> dict:
     _, train = load_curriculum(train_path)
     _, heldout = load_curriculum(eval_path, minimum_records=8)
     contract = contract_payload(
-        base_model=MODEL, revision=REVISION, parent_adapter=None,
+        base_model=MODEL, revision=REVISION, parent_adapter=parent_adapter,
         curriculum=train, eval_curriculum=heldout, max_length=1024,
         epochs=1.0, learning_rate=2e-6, seed=3407, save_steps=2,
     )
@@ -61,10 +61,10 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--bundle-dir", type=Path, default=DEFAULT_BUNDLE)
-    parser.add_argument("--checkpoint", default="auto")
+    parser.add_argument("--checkpoint", default="auto")\n    parser.add_argument("--parent-adapter", default=None)
     parser.add_argument("--path-only", action="store_true")
     args = parser.parse_args()
-    selection = select(args.output_dir, args.bundle_dir, requested=args.checkpoint)
+    selection = select(args.output_dir, args.bundle_dir, requested=args.checkpoint,\n                       parent_adapter=args.parent_adapter)
     print(selection["checkpoint"] if args.path_only else json.dumps(selection, indent=2))
     return 0
 
