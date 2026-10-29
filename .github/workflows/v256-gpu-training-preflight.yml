@@ -1,0 +1,66 @@
+name: Aerynza v256 GPU readiness and independent execution gates
+
+on:
+  pull_request:
+    paths:
+      - 'training_packs/next_gpu/**'
+      - 'scripts/build_next_gpu_packs.py'
+      - 'scripts/build_v255_independent_eval.py'
+      - 'scripts/validate_v256_production_packs.py'
+      - 'scripts/prepare_v256_gpu_bundle.py'
+      - 'scripts/select_v256_exact_resume.py'
+      - 'scripts/launch_v256_production_readiness.sh'
+      - 'tests/test_v256_training_packages.py'
+      - '.github/workflows/v256-gpu-training-preflight.yml'
+  push:
+    branches:
+      - 'codex/v256-gpu-production-readiness'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cpu-preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Check new training scripts compile
+        run: |
+          python3 -m py_compile scripts/validate_v256_production_packs.py
+          python3 -m py_compile scripts/prepare_v256_gpu_bundle.py
+          python3 -m py_compile scripts/select_v256_exact_resume.py
+          python3 -m py_compile scripts/build_next_gpu_packs.py
+          python3 -m py_compile scripts/build_v255_independent_eval.py
+          bash -n scripts/launch_v256_production_readiness.sh
+      - name: Validate prior training contracts and 640 inventory
+        run: |
+          python3 scripts/validate_v251_packages.py
+          python3 scripts/validate_v252_packages.py
+          python3 scripts/validate_v253_packages.py
+          python3 -m unittest discover -s tests -p 'test_v255_production_parity.py' -v
+      - name: Reject prompt leakage and incomplete production capability lessons
+        run: python3 -m scripts.validate_v256_production_packs
+      - name: Build and verify immutable training and independent evaluation files
+        run: python3 -m scripts.prepare_v256_gpu_bundle --build
+      - name: Run negative controls for training and full-state resume
+        run: python3 -m unittest discover -s tests -p 'test_v256_training_packages.py' -v
+      - name: Check trainer schema, assistant-only training split and GPU flags (no GPU)
+        run: |
+          python3 scripts/train_qwen_ascension_lora.py \
+            --model Qwen/Qwen3-1.7B \
+            --model-revision 70d244cc86ccca08cf5af4e1e306ecf908b1ad5e \
+            --curriculum 'training_packs/next_gpu/bundles/v256/train/*.jsonl' \
+            --eval-curriculum 'training_packs/next_gpu/bundles/v256/eval/independent_supervised.jsonl' \
+            --output-dir checkpoints/v256_ci_preflight_only \
+            --epochs 1.0 --learning-rate 2e-6 --max-length 1024 \
+            --seed 3407 --save-steps 2 --validate-only
+      - name: No candidate trained or promoted in CI
+        run: |
+          test ! -e checkpoints/v256_ci_preflight_only/adapter_model.safetensors
+          test ! -e checkpoints/v256_ci_preflight_only/ascension_training_receipt.json
+          echo 'CPU structural preflight only: model performance and all 640 execution receipts remain unverified.'
