@@ -18,8 +18,9 @@ SOURCES = (
     ROOT / "evals/training/aerynza_v253_independent_heldout.jsonl",
     ROOT / "training_packs/next_gpu/cross_domain_v254_heldout.jsonl",
     ROOT / "training_packs/next_gpu/v255_production_parity_heldout.jsonl",
+    ROOT / "training_packs/next_gpu/v256_production_readiness_heldout.jsonl",
 )
-DEFAULT_OUTPUT = ROOT / "training_packs/next_gpu/evaluation/v255_independent_union.jsonl"
+DEFAULT_OUTPUT = ROOT / "training_packs/next_gpu/evaluation/v256_independent_union.jsonl"
 
 
 def sha256(raw: bytes) -> str:
