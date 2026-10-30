@@ -21,7 +21,7 @@ _MAX_BUFFER_CHARS = 32000
 _SENSITIVE_TOPIC = re.compile(
     r"\b(?:payment|payroll|transfer|purchase|bank|balance|credit card|"
     r"medical|diagnos|prescription|health record|saved|schedule|"
-    r"send|sent|delete|erase|calendar|booked|reservation)\b",
+    r"send|sent|delete|erase|calendar|book(?:ing|ed)?|reservation)\b",
     re.I,
 )
 
