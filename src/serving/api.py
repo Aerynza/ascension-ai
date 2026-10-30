@@ -135,6 +135,7 @@ from src.core.contracts import Shell, Tier
 from src.core.media_executor import generate_image, parse_image_request
 from src.core.model_runtime import ModelRamBudgetExceeded, NativeInferenceQueueTimeout, runtime
 from src.core.stream_safety import safe_model_chunks
+from src.core.stream_contract import verified_output_chunks
 from src.core.release_readiness import REQUIRED_RELEASE_GATES, evaluate_release_gates
 from src.financial.plaid_client import get_balances, parse_balance_query
 from src.core.orchestrator import deterministic_response, prepare_inference, respond, scope_context, surface_plan
@@ -1151,7 +1152,16 @@ async def stream_intelligence(request: IntelligenceRequest, token: str = Depends
                 }
                 yield f"event: done\ndata: {json.dumps(done, separators=(',', ':'))}\n\n"
                 return
-            for token in safe_model_chunks(runtime.stream_chat(prepared["messages"], request.temperature, effective_max_tokens(request.max_tokens, request.mode))):
+            raw_tokens = safe_model_chunks(runtime.stream_chat(
+                prepared["messages"], request.temperature,
+                effective_max_tokens(request.max_tokens, request.mode),
+            ))
+            verified_tokens = verified_output_chunks(
+                raw_tokens, cognitive=prepared["cognition"],
+                context=scope_context(context, request.shell),
+                mode=request.mode, latest=latest,
+            )
+            for token in verified_tokens:
                 yield f"event: token\ndata: {json.dumps({'token': token}, ensure_ascii=False)}\n\n"
             done = {"latency_ms": round((time.perf_counter() - started) * 1000), "production_replacement_enabled": production_replacement_enabled()}
             yield f"event: done\ndata: {json.dumps(done, separators=(',', ':'))}\n\n"

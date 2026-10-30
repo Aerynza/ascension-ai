@@ -22,5 +22,7 @@ jobs:
         run: python -m unittest scripts.test_stream_safety scripts.test_native_stream_latency
       - name: Validate latency tuning controls (no model download)
         run: python -m unittest scripts.test_native_cpu_prefill
+      - name: Verify streamed receipt integrity before revealing tokens
+        run: python -m unittest scripts.test_native_stream_contract
       - name: Compile service modules
         run: python -m compileall -q src scripts
