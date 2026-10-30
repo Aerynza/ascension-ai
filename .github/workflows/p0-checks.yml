@@ -20,5 +20,7 @@ jobs:
         run: python -m pytest tests/test_p0_hardening.py tests/test_model_deploy_preflight.py tests/test_release_readiness.py tests/test_session_context_bounds.py tests/test_signed_http_admission.py tests/test_canonicalization_contract.py tests/test_postgres_replay_preflight.py tests/test_native_gguf_lock_priority.py -q
       - name: Verify streaming privacy and first-token counters
         run: python -m unittest scripts.test_stream_safety scripts.test_native_stream_latency
+      - name: Validate latency tuning controls (no model download)
+        run: python -m unittest scripts.test_native_cpu_prefill
       - name: Compile service modules
         run: python -m compileall -q src scripts
