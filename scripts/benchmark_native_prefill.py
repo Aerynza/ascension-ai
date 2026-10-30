@@ -63,7 +63,7 @@ def benchmark(batch: int, trials: int, warmup: int) -> dict:
     return {
         "profile": instance.profile_name,
         "batch": batch,
-        "threads": instance.profile.get("threads"),
+        "model_load_parameters": __import__("src.core.inference_tuning", fromlist=["llama_cpu_settings"]).llama_cpu_settings(instance.profile),
         "ctx": os.getenv("ASCENSION_MODEL_CONTEXT", "768"),
         "warmup": warmup,
         "samples": len(samples),
@@ -73,7 +73,7 @@ def benchmark(batch: int, trials: int, warmup: int) -> dict:
         },
         "queue_wait_ms_p50": round(statistics.median(first_token_proxy), 1),
         "completion_tokens_median": statistics.median(completions),
-        "estimated_decode_tokens_per_second": (
+        "effective_output_tokens_per_second_including_prefill": (
             round(sum(completions) / (sum(samples) / 1000), 2) if sum(samples) else 0
         ),
         "measurement_note": (
