@@ -85,6 +85,9 @@ class NativeModelRuntime:
         self.last_queue_wait_ms = 0
         self.max_queue_wait_ms = 0
         self.last_inference_ms = 0
+        self.last_stream_first_token_ms = 0
+        self.last_stream_inference_ms = 0
+        self.completed_stream_requests = 0
         self.queue_timeout_seconds = float(os.getenv("ASCENSION_QUEUE_TIMEOUT_SECONDS", "95"))
         self.inference_timeout_seconds = float(os.getenv("ASCENSION_INFERENCE_TIMEOUT_SECONDS", "180"))
         self.inference_started_at: float | None = None
@@ -175,6 +178,9 @@ class NativeModelRuntime:
                 "last_queue_wait_ms": self.last_queue_wait_ms,
                 "max_queue_wait_ms": self.max_queue_wait_ms,
                 "last_inference_ms": self.last_inference_ms,
+                "last_stream_first_token_ms": self.last_stream_first_token_ms,
+                "last_stream_inference_ms": self.last_stream_inference_ms,
+                "completed_stream_requests": self.completed_stream_requests,
                 "queue_timeout_seconds": self.queue_timeout_seconds,
                 "inference_timeout_seconds": self.inference_timeout_seconds,
                 "inference_started_at": self.inference_started_at,
@@ -302,16 +308,24 @@ class NativeModelRuntime:
     def stream_chat(self, messages: list[dict], temperature: float, max_tokens: int):
         if self.model is None:
             raise RuntimeError(self.load_error or "Native model is not loaded.")
+        queued_at = time.perf_counter()
         inference_messages = self._prepare_messages(messages)
-        if not self.lock.acquire(timeout=self.queue_timeout_seconds):
-            with self.metrics_lock:
-                self.timeout_requests += 1
-                self.failed_requests += 1
-            raise NativeInferenceQueueTimeout("Native inference queue timeout")
+        with self.metrics_lock:
+            self.queue_depth += 1
+        acquired = False
+        completed = False
+        inference_started = None
         try:
+            acquired = self.lock.acquire(timeout=self.queue_timeout_seconds)
+            if not acquired:
+                raise NativeInferenceQueueTimeout("Native inference queue timeout")
+            inference_started = time.perf_counter()
             with self.metrics_lock:
+                self.queue_depth = max(0, self.queue_depth - 1)
+                self.last_queue_wait_ms = round((inference_started - queued_at) * 1000)
+                self.max_queue_wait_ms = max(self.max_queue_wait_ms, self.last_queue_wait_ms)
                 self.active_requests += 1
-                self.inference_started_at = time.perf_counter()
+                self.inference_started_at = inference_started
             chunks = self.model.create_chat_completion(
                 messages=inference_messages,
                 temperature=temperature,
@@ -321,19 +335,35 @@ class NativeModelRuntime:
                 stop=["<|im_end|>", "<|endoftext|>"],
                 stream=True,
             )
+            received_first_token = False
             for chunk in chunks:
                 token = str(chunk.get("choices", [{}])[0].get("delta", {}).get("content", ""))
                 if token:
+                    if not received_first_token:
+                        with self.metrics_lock:
+                            self.last_stream_first_token_ms = round((time.perf_counter() - queued_at) * 1000)
+                        received_first_token = True
                     yield token
+            completed = True
         except Exception:
             with self.metrics_lock:
                 self.failed_requests += 1
+                if not acquired:
+                    self.timeout_requests += 1
             raise
         finally:
-            self.lock.release()
+            if acquired:
+                self.lock.release()
             with self.metrics_lock:
-                self.active_requests = max(0, self.active_requests - 1)
-                self.inference_started_at = None
+                if not acquired:
+                    self.queue_depth = max(0, self.queue_depth - 1)
+                else:
+                    self.active_requests = max(0, self.active_requests - 1)
+                    self.inference_started_at = None
+                    if inference_started is not None:
+                        self.last_stream_inference_ms = round((time.perf_counter() - inference_started) * 1000)
+                    if completed:
+                        self.completed_stream_requests += 1
 
     def _prepare_messages(self, messages: list[dict]) -> list[dict]:
         """Keep Qwen3 in fast non-thinking mode without exposing control tokens in UI."""
