@@ -10,6 +10,8 @@ import threading
 import time
 from pathlib import Path
 
+from .inference_tuning import llama_cpu_settings
+
 
 ROOT = Path(__file__).resolve().parents[2]
 PROFILES_PATH = ROOT / "config" / "model_profiles.json"
@@ -144,10 +146,7 @@ class NativeModelRuntime:
             lora_path = self._lora_path()
             model_kwargs = {
                 "model_path": str(path),
-                "n_ctx": int(os.getenv("ASCENSION_MODEL_CONTEXT", os.getenv("AERYNZA_MODEL_CONTEXT", "768"))),
-                "n_threads": int(os.getenv("ASCENSION_MODEL_THREADS", self.profile["threads"])),
-                "n_threads_batch": int(os.getenv("ASCENSION_MODEL_THREADS_BATCH", self.profile["threads"])),
-                "n_batch": int(os.getenv("ASCENSION_MODEL_BATCH", os.getenv("AERYNZA_MODEL_BATCH", "16"))),
+                **llama_cpu_settings(self.profile),
                 "use_mmap": True,
                 "use_mlock": False,
                 "verbose": False,
