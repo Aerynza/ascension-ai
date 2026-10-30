@@ -47,7 +47,7 @@ class NativeStreamContractTest(unittest.TestCase):
         result = next(stream)
         self.assertEqual(consumed, ["first", "last"])
         self.assertNotIn("I've saved", result)
-        self.assertIn("not been saved", result)
+        self.assertIn("Nothing is confirmed by a provider receipt yet", result)
 
     def test_action_proposal_and_nonconversation_buffer_full_model_turn(self):
         for mode, latest, cognitive in [
