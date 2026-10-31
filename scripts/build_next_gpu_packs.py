@@ -23,6 +23,9 @@ SOURCES = {
     "cross_domain_v254_heldout": ROOT / "training_packs/next_gpu/cross_domain_v254_heldout.jsonl",
     "v255_parity_train": ROOT / "training_packs/next_gpu/v255_production_parity.jsonl",
     "v255_parity_heldout": ROOT / "training_packs/next_gpu/v255_production_parity_heldout.jsonl",
+    "v256_train": ROOT / "training_packs/next_gpu/v256_production_readiness_train.jsonl",
+    "v256_heldout": ROOT / "training_packs/next_gpu/v256_production_readiness_heldout.jsonl",
+    "v256_benchmarks": ROOT / "training_packs/next_gpu/v256_independent_execution_benchmarks.json",
     "v253_reasoning": ROOT / "evals/training/aerynza_v253_reasoning_execution_train.jsonl",
     "v253_ambient": ROOT / "evals/training/aerynza_v253_ambient_sovereignty_train.jsonl",
     "v253_heldout": ROOT / "evals/training/aerynza_v253_independent_heldout.jsonl",
@@ -85,6 +88,10 @@ def heldout_set() -> set[str]:
         prompts.add(normalize(record.get("user") or ""))
     for record in read_jsonl(SOURCES["v255_parity_heldout"]):
         prompts.add(normalize(record.get("user") or ""))
+    for record in read_jsonl(SOURCES["v256_heldout"]):
+        prompts.add(normalize(record.get("user") or ""))
+    for case in json.loads(SOURCES["v256_benchmarks"].read_text(encoding="utf-8")).get("cases", []):
+        prompts.add(normalize(case.get("task") or ""))
     for item in json.loads(SOURCES["v253_benchmarks"].read_text(encoding="utf-8")).get("cases", []):
         prompts.add(normalize(item.get("task") or ""))
     for file in sorted((ROOT / "evals/training").glob("*heldout*.jsonl")):
@@ -234,6 +241,14 @@ def build() -> tuple[list[dict], dict]:
             raise ValueError(f"v255 sample lacks explicit provenance: {row.get('id')}")
         if not add(row, "v255_production_parity"):
             raise ValueError(f"v255 scenario excluded or duplicated: {row.get('id')}")
+    # V256: 60 original production execution, source-grounding, artifact,
+    # privacy, recovery and local-model lessons across 20 independent families.
+    # Never optimize on the distinct v256 heldout or executable benchmarks.
+    for row in read_jsonl(SOURCES["v256_train"]):
+        if row.get("review_status") != "pending_human_review" or row.get("source_kind") != "ai_authored_synthetic":
+            raise ValueError(f"v256 training item lacks explicit synthetic review status: {row.get('id')}")
+        if not add(row, "v256_production_readiness"):
+            raise ValueError(f"v256 training case excluded or duplicates prior material: {row.get('id')}")
     output.sort(key=lambda r: (r["package"], r["id"]))
     if len(output) < MIN_ROWS or capability_coverage != set(known):
         raise ValueError("Training package too small or missing catalog coverage")
@@ -241,7 +256,7 @@ def build() -> tuple[list[dict], dict]:
     counts = Counter(r["package"] for r in output)
     shells = Counter(r["shell"] for r in output)
     manifest = {
-        "version": "next_gpu_2026_10_v3_targeted",
+        "version": "next_gpu_2026_10_v4_production_readiness",
         "purpose": "GPU-ready curriculum; no training or provider execution performed",
         "base_model": "Qwen/Qwen3-1.7B",
         "base_model_revision": "70d244cc86ccca08cf5af4e1e306ecf908b1ad5e",
