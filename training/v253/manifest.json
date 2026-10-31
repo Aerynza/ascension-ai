@@ -1,0 +1,90 @@
+{
+  "schema_version": "aerynza_training_package_v253.1",
+  "package_id": "v253_self_reliant_reasoning_execution",
+  "built_on": "v251_foundation_and_v252_execution",
+  "status": "synthetic_candidate_pending_review",
+  "intended_use": "supervised_finetuning_candidate_and_independent_acceptance_tests",
+  "never_claim_frontier_parity": true,
+  "catalog_source": "public/capability_report.json",
+  "catalog_ids_expected": 640,
+  "train_files": [
+    "evals/training/aerynza_v253_reasoning_execution_train.jsonl",
+    "evals/training/aerynza_v253_ambient_sovereignty_train.jsonl"
+  ],
+  "train_records": 72,
+  "heldout_file": "evals/training/aerynza_v253_independent_heldout.jsonl",
+  "heldout_records": 24,
+  "benchmark_file": "evals/benchmarks/aerynza_v253_independent_tasks.json",
+  "benchmark_cases": 12,
+  "packages": [
+    "conversation_reasoning",
+    "research_grounding",
+    "coding_debugging",
+    "documents_data",
+    "tool_execution",
+    "failure_recovery",
+    "ambient_memory",
+    "multi_shell_privacy",
+    "health_financial_boundaries",
+    "multimodal_truth",
+    "autonomous_planning",
+    "self_hosted_independence"
+  ],
+  "records_per_package": {
+    "train": 6,
+    "heldout": 2,
+    "benchmark": 1
+  },
+  "permitted_shells": [
+    "ap",
+    "lifeos",
+    "sprout",
+    "nexus_home",
+    "nexus_family",
+    "creation"
+  ],
+  "excluded_shells": [
+    "core"
+  ],
+  "provenance": "ai_authored_synthetic",
+  "review_status": "pending_human_review",
+  "recommended_model": {
+    "repo_id": "Qwen/Qwen3-1.7B",
+    "revision": "70d244cc86ccca08cf5af4e1e306ecf908b1ad5e",
+    "license": "apache-2.0",
+    "parameters_approx": 2031700000
+  },
+  "trainer": "scripts/train_qwen_ascension_lora.py",
+  "train_policy": {
+    "assistant_only_loss": true,
+    "epochs": 1,
+    "learning_rate": 0.000002,
+    "max_length": 1024,
+    "seed": 3407,
+    "adapter_only": true,
+    "always_review_parent_and_base": true,
+    "never_overwrite_output": true,
+    "require_cuda": true,
+    "minimum_vram_gib_for_default_profile": 12
+  },
+  "promotion": {
+    "automatic": false,
+    "training_authorized": false,
+    "require_dataset_review": true,
+    "require_receipt_truth_100_percent": true,
+    "require_canonical_security_100_percent": true,
+    "require_all_critical_negative_cases_pass": true,
+    "require_640_id_inventory": true,
+    "require_real_provider_receipts_per_capability": true,
+    "require_independent_execution_fixtures": true,
+    "require_model_latency_concurrency_slo": true,
+    "require_signed_shell_and_tenant_isolation": true,
+    "require_human_signoff": true
+  },
+  "boundaries": {
+    "data_not_from_real_users": true,
+    "benchmark_never_train": true,
+    "model_training_not_equivalent_to_tools": true,
+    "offline_model_does_not_imply_offline_calendar_payments_data_services": true
+  }
+}
