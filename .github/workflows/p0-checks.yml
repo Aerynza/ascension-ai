@@ -24,5 +24,7 @@ jobs:
         run: python -m unittest scripts.test_native_cpu_prefill
       - name: Verify streamed receipt integrity before revealing tokens
         run: python -m unittest scripts.test_native_stream_contract
+      - name: Verify model-free native replacement contract
+        run: python scripts/replacement_contract_eval.py
       - name: Compile service modules
         run: python -m compileall -q src scripts
