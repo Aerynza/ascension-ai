@@ -101,6 +101,13 @@ def check_http_envelope(headers, payload, *, config, nonce_store, method, path):
     if path == "/v1/thesis" and payload.get("scope") == "human":
         if payload.get("subject_id") != identity["subject"]:
             raise InvalidEnvelope("Personal thesis subject must match authenticated caller")
+    if path == "/v1/thesis/contribution":
+        # A user-selected consent receipt is not independently verified here.
+        # At minimum, a signed account cannot stage a contribution claiming to
+        # originate from a *different* account's Human Thesis. The LifeOS shell
+        # remains responsible for checking real consent and resource grants.
+        if payload.get("member_id") != identity["subject"]:
+            raise InvalidEnvelope("Thesis contributor must match authenticated caller")
     return identity
 
 
