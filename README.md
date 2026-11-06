@@ -1,18 +1,22 @@
-# Ascension AI
+# Aerynza AI
 
-Ascension AI is the private, shared intelligence core for Ascension LifeOS. It runs a pinned open-weight model locally through `llama.cpp`; the production runtime does not call OpenAI, Gemini, Anthropic, or another hosted model.
+Aerynza AI is the **master native intelligence product** built from the human-coordination architecture of **AerynzaLife (LifeOS)**. AerynzaLife remains the product foundation and authority for authenticated user data, permissions, consent, entitlements, actions, and receipts. Aerynza AI supplies permission-scoped reasoning, structured proposals, and shell-specific responses; it does not independently acquire access to a person's other accounts or execute external actions.
 
-Current status: personal v19. The standalone service runs a pinned local model and is suitable for evaluation, local Windows/Android/iPhone control, and staged LifeOS routing. It is not yet approved as the only production intelligence provider; `/v1/readiness` deliberately reports that distinction.
+The standalone service runs pinned local open-weight inference through `llama.cpp`; this native service does not call hosted model APIs as its inference runtime. It supports evaluation, local device control, and staged integration with AerynzaLife. **It is not approved as the sole production intelligence provider.** The existing outside-AI fallback stays available until checkpoint-bound quality, privacy, latency, safety, concurrency, and recovery gates are independently satisfied. Loading a native model does not constitute replacement approval.
 
-## Product shells
+See [Aerynza intelligence relationship and public evidence index](docs/architecture/AERYNZA_INTELLIGENCE_RELATIONSHIP.md) for the product boundary, current identifiers, privacy requirements, and independently reviewable source pointers.
 
-- **AP** — one person’s conversational partner, assistant, task manager, coach, and mentor.
-- **LifeOS** — domain intelligence that turns permissioned context into screen-ready insights and proposed next actions.
-- **NexusHome** — household and co-parenting coordination with strict private-data boundaries.
-- **NexusFamily** — FamilyOS and family-enterprise coordination; shared-chat behavior follows the FamilyOS consent contract.
-- **Core** — neutral analysis without a relationship persona.
+## Product shells and canonical product names
 
-The same core recognizes FreeOS, LifeOS, LifeOS+, FounderOS, and LifeOS Infinite requests. The authenticated calling product—not the model—enforces subscriptions, permissions, and available actions.
+- **AP** — one individual's intelligence partner; private personal context is scoped to that individual.
+- **LifeOS** — AerynzaLife domain intelligence that turns permitted context into proposed next actions and screen-ready insights.
+- **NexusHome** (existing internal shell identifier `nexus_home`) — **FamilyOS**, the home/household coordination product. The internal compatibility identifier is not the current customer-facing product name.
+- **NexusFamily** (existing internal shell identifier `nexus_family`) — **Nexus**, the extended family, friends, relationships, and enterprise network. Sharing never implies permission to read a member's private AP context.
+- **Sprout** — child learning and family-connected experiences under guardian permissions and child-safety rules.
+- **Core** — neutral reasoning tier or analysis context, not a standalone relationship shell.
+- **Creation** — a scoped creation/product workflow, not an independent person's identity.
+
+The current role identifiers are defined in `src/core/contracts.py`. This naming map documents product intent; it does **not** rename the existing request protocol, widen an allowlist, or imply that all shells have passed production authorization tests. The calling authenticated product, not a model claim, enforces subscriptions, resource ownership, consent, and confirmed actions.
 
 ## Executable capability domains
 
