@@ -1,7 +1,7 @@
 {
-  "name": "ascension-ai",
+  "name": "aerynza-ai",
   "version": "1.0.0",
-  "description": "Self-contained Ascension personal intelligence core and shell orchestration system",
+  "description": "Aerynza AI native intelligence core and permissioned product orchestration",
   "main": "src/index.ts",
   "scripts": {
     "dev": "tsx watch src/index.ts",
@@ -19,7 +19,7 @@
     "agents",
     "multimodal"
   ],
-  "author": "Ascension",
+  "author": "Aerynza",
   "license": "PROPRIETARY",
   "dependencies": {
     "express": "^4.18.2",

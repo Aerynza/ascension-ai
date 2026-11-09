@@ -1,6 +1,6 @@
-# Ascension AI
+# Aerynza AI
 
-Ascension AI is the private, shared intelligence core for Ascension LifeOS. It runs a pinned open-weight model locally through `llama.cpp`; the production runtime does not call OpenAI, Gemini, Anthropic, or another hosted model.
+Aerynza AI is the shared intelligence engine for AerynzaLife, AerynzaSprout, FamilyOS (household), and Nexus (extended network). It runs a pinned open-weight model locally through `llama.cpp`; the production runtime does not call OpenAI, Gemini, Anthropic, or another hosted model.
 
 Current status: personal v19. The standalone service runs a pinned local model and is suitable for evaluation, local Windows/Android/iPhone control, and staged LifeOS routing. It is not yet approved as the only production intelligence provider; `/v1/readiness` deliberately reports that distinction.
 
@@ -18,7 +18,7 @@ The same core recognizes FreeOS, LifeOS, LifeOS+, FounderOS, and LifeOS Infinite
 
 The native orchestration contract currently routes identity, scheduling, finance, health, learning, creation, relationships, family, home, career, emotional intelligence, documents, research, environment, business, and safety. These domains can be invoked through chat or as page/surface intelligence.
 
-The AI proposes intelligence and actions. LifeOS owns authentication, database access, entitlement checks, confirmations, action execution, evidence, and audit logs. A model response alone never proves that an action occurred.
+The AI proposes intelligence and actions. AerynzaLife and each authorized product shell own authentication, database access, entitlement checks, confirmations, action execution, evidence, and audit logs. A model response alone never proves that an action occurred.
 
 ## Local profiles
 
@@ -123,8 +123,8 @@ ASCENSION_AI_TIMEOUT_MS=120000
 
 Routing modes:
 
-- `primary` — Ascension AI first, existing providers only if native inference fails.
-- `fallback` — existing provider first, Ascension AI available afterward.
+- `primary` — Aerynza AI first, existing providers only if native inference fails.
+- `fallback` — existing provider first, Aerynza AI available afterward.
 - `only` — native intelligence only; use after replacement evaluations pass.
 - `off` — native routing disabled.
 
