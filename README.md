@@ -1,16 +1,20 @@
 # Aerynza AI
 
-Aerynza AI is the shared intelligence engine for AerynzaLife, AerynzaSprout, FamilyOS (household), and Nexus (extended network). It runs a pinned open-weight model locally through `llama.cpp`; the production runtime does not call OpenAI, Gemini, Anthropic, or another hosted model.
+Aerynza AI is the master native intelligence product built from AerynzaLife's human-coordination architecture. It serves AerynzaLife, AerynzaSprout, FamilyOS (household), and Nexus (extended network). The authenticated calling product, not the AI model, owns member identities, private context, permissions, consent, subscription enforcement, provider actions, and verified receipts. The native service uses a pinned local open-weight model through `llama.cpp`; its inference runtime does not call a hosted model provider.
 
 Current status: personal v19. The standalone service runs a pinned local model and is suitable for evaluation, local Windows/Android/iPhone control, and staged LifeOS routing. It is not yet approved as the only production intelligence provider; `/v1/readiness` deliberately reports that distinction.
 
-## Product shells
+## Product shells and canonical names
 
-- **AP** — one person’s conversational partner, assistant, task manager, coach, and mentor.
-- **LifeOS** — domain intelligence that turns permissioned context into screen-ready insights and proposed next actions.
-- **NexusHome** — household and co-parenting coordination with strict private-data boundaries.
-- **NexusFamily** — FamilyOS and family-enterprise coordination; shared-chat behavior follows the FamilyOS consent contract.
-- **Core** — neutral analysis without a relationship persona.
+- **AP** — a single person's private assistant; no independent right to inspect another account.
+- **LifeOS** — AerynzaLife domain intelligence for context-aware proposals and daily planning.
+- **FamilyOS** — home/household and co-parenting coordination, using the existing internal protocol shell `nexus_home`.
+- **Nexus** — extended family, friends, trusted network, and shared projects, using the existing internal protocol shell `nexus_family`.
+- **AerynzaSprout** — age-appropriate learning and child-guardian experiences, using the internal shell `sprout`.
+- **Core** — neutral reasoning tier/context, not a separate relationship or independently authorized identity.
+- **Creation** — scoped creative workflow with verified approval before publishing.
+
+The current internal shell values remain unchanged for compatibility. See [canonical intelligence relationship and evidence index](docs/architecture/AERYNZA_INTELLIGENCE_RELATIONSHIP.md).
 
 The same core recognizes FreeOS, LifeOS, LifeOS+, FounderOS, and LifeOS Infinite requests. The authenticated calling product—not the model—enforces subscriptions, permissions, and available actions.
 
@@ -115,7 +119,7 @@ Example request:
 Deploy this repository as its own Render service. Configure the LifeOS service with:
 
 ```text
-ASCENSION_AI_URL=https://ascension-ai.onrender.com
+ASCENSION_AI_URL=https://aerynza-ai.onrender.com
 ASCENSION_AI_SERVICE_TOKEN=<same private service token>
 ASCENSION_NATIVE_MODE=primary
 ASCENSION_AI_TIMEOUT_MS=120000
@@ -135,7 +139,7 @@ The LifeOS router sends the relevant shell, subscription tier, product surface, 
 ```bash
 python scripts/native_conversation_eval.py
 python scripts/replacement_contract_eval.py
-set ASCENSION_AI_BASE_URL=https://ascension-ai.onrender.com
+set ASCENSION_AI_BASE_URL=https://aerynza-ai.onrender.com
 set ASCENSION_AI_TEST_TOKEN=<private test token>
 python scripts/replacement_readiness_eval.py
 ```
