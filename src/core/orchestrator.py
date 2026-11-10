@@ -646,7 +646,7 @@ def prepare_inference(*, shell: Shell, tier: Tier, messages: list[dict], context
         "role": "system",
         "content": (
             f"Invocation mode: {mode}. Current product surface: {surface}. "
-            f"Response contract: {response_contract(mode)} "
+            f"Response contract: {response_contract(mode, shell=shell)} "
             f"Relevant domains: {','.join(domains)}. "
             f"Aerynza cognition packet: {json.dumps(prompt_cognition, ensure_ascii=False, separators=(',', ':'))}. "
             f"Permission-scoped context packet: {compact_context(scoped_context)}"
