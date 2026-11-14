@@ -21,7 +21,7 @@ jobs:
       - name: Verify nonhuman Sprout guide and adult shell isolation
         run: python -m pytest tests/test_sprout_learning_guide_contract.py -q
       - name: Verify streaming privacy and first-token counters
-        run: python -m unittest scripts.test_stream_safety scripts.test_native_stream_latency
+        run: python -m unittest scripts.test_stream_safety scripts.test_native_stream_latency && python -m pytest tests/test_native_inference_metrics_release.py -q
       - name: Validate latency tuning controls (no model download)
         run: python -m unittest scripts.test_native_cpu_prefill
       - name: Verify streamed receipt integrity before revealing tokens
