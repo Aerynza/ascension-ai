@@ -283,10 +283,14 @@ class NativeModelRuntime:
                     self.completed_requests += 1
                     self.last_inference_ms = inference_ms
             finally:
-                self.lock.release()
+                # Keep admission metrics coherent until the exclusive model
+                # lock is actually handed to the next request. Releasing
+                # first allowed a new caller to set inference_started_at,
+                # then this older caller could clear the new timestamp.
                 with self.metrics_lock:
                     self.active_requests = max(0, self.active_requests - 1)
                     self.inference_started_at = None
+                self.lock.release()
         except Exception:
             with self.metrics_lock:
                 if not dequeued:
@@ -351,8 +355,9 @@ class NativeModelRuntime:
                     self.timeout_requests += 1
             raise
         finally:
-            if acquired:
-                self.lock.release()
+            # Clear this generator's active status before releasing the model.
+            # Otherwise a new request can acquire the lock and publish its
+            # start timestamp only to have the old stream erase it.
             with self.metrics_lock:
                 if not acquired:
                     self.queue_depth = max(0, self.queue_depth - 1)
@@ -363,6 +368,8 @@ class NativeModelRuntime:
                         self.last_stream_inference_ms = round((time.perf_counter() - inference_started) * 1000)
                     if completed:
                         self.completed_stream_requests += 1
+            if acquired:
+                self.lock.release()
 
     def _prepare_messages(self, messages: list[dict]) -> list[dict]:
         """Keep Qwen3 in fast non-thinking mode without exposing control tokens in UI."""

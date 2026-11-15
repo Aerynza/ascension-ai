@@ -63,6 +63,24 @@ class GraphContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unit id"):
             validate_plan(plan)
 
+    def test_nested_protected_paths(self):
+        for file in ("mobile/.env", "mobile/.env.production", "sub/.git/config",
+                     "sub/.github/workflows/ci.yml", "sub/AGENTS.md", "sub/CLAUDE.md",
+                     "sub/.gitleaks.toml", "sub/.gitleaksignore"):
+            with self.subTest(file=file):
+                plan = sample_plan()
+                plan["units"][0]["files"] = [file]
+                with self.assertRaisesRegex(ValueError, "protected repository path"):
+                    validate_plan(plan)
+
+    def test_nonstring_ids(self):
+        for value in (["api"], {"id": "api"}, True, 123):
+            with self.subTest(value=value):
+                plan = sample_plan()
+                plan["units"][0]["id"] = value
+                with self.assertRaisesRegex(ValueError, "unit id"):
+                    validate_plan(plan)
+
     def test_parallel_limit(self):
         plan = sample_plan()
         plan["max_parallel"] = 4

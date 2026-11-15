@@ -18,9 +18,8 @@ def safe_path(value: object) -> str:
             or value.startswith("/") or re.match(r"^[A-Za-z]:", value)
             or any(part in ("", ".", "..") for part in value.split("/"))):
         raise ValueError(f"invalid repository path: {value!r}")
-    if (value in PROTECTED or value == ".env" or value.startswith(".env.")
-            or value == ".git" or value.startswith(".git/")
-            or value == ".github" or value.startswith(".github/")):
+    if (value in PROTECTED or any(part in PROTECTED or part in (".env", ".git", ".github")
+            or part.startswith(".env.") for part in value.split("/"))):
         raise ValueError(f"protected repository path: {value}")
     return value
 

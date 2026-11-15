@@ -272,3 +272,43 @@ def test_malformed_signing_mode_produces_clean_503_without_auth_downgrade(monkey
         )
         assert result.status_code == 503
         assert result.json() == {"detail": "Signed request configuration invalid"}
+
+
+def test_signed_thesis_contribution_rejects_foreign_member_even_with_forged_consent(signed_service):
+    key, _ = signed_service
+    body = {
+        "shell": "ap",
+        "member_id": "18",
+        "target_scope": "nexus_family",
+        "human_thesis": {"scope": "human", "owner": "18", "claims": []},
+        "selections": [{"claim_id": "foreign-private-claim"}],
+        "consent_receipt_id": "unverified-caller-string",
+    }
+    signed = headers(body, key, path="/v1/thesis/contribution",
+                     nonce="foreign-member-contribution", subject="17")
+    with TestClient(api.app) as client:
+        denied = client.post("/v1/thesis/contribution", json=body, headers=signed)
+        assert denied.status_code == 401
+        assert "foreign" not in denied.text.lower()
+        assert "unverified-caller-string" not in denied.text
+
+
+def test_signed_thesis_contribution_preserves_same_owner_preparation(signed_service):
+    key, _ = signed_service
+    body = {
+        "shell": "ap",
+        "member_id": "17",
+        "target_scope": "nexus_home",
+        "human_thesis": {"scope": "human", "owner": "17", "claims": []},
+        "selections": [{"claim_id": "missing-claim"}],
+        "consent_receipt_id": "pending-lifeos-consent-check",
+    }
+    signed = headers(body, key, path="/v1/thesis/contribution",
+                     nonce="own-member-contribution", subject="17")
+    with TestClient(api.app) as client:
+        prepared = client.post("/v1/thesis/contribution", json=body, headers=signed)
+        assert prepared.status_code == 200, prepared.text
+        result = prepared.json()
+        assert result["member_id"] == "17"
+        assert result["claims"] == []
+        assert result["persistence"] == "calling_shell_persists_only_after_validating_the_consent_receipt"

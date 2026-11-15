@@ -17,7 +17,7 @@ This adds a standard-library-only **offline task planner and scope gate**. It do
 }
 ```
 
-`files` specify exactly owned repository-relative files. `needs` describe actual producer-owned paths a downstream worker reads. The planner rejects cycles, fake edges, duplicate IDs, two workers owning the same file, path traversal, control-file claims, and more than three concurrent units. The waves output is a schedule **proposal**, not worker execution.
+`files` specify exactly owned repository-relative files. `needs` describe actual producer-owned paths a downstream worker reads. Protected instruction, secret and Git metadata paths are rejected at every directory depth. The planner rejects cycles, fake edges, duplicate IDs, two workers owning the same file, path traversal, control-file claims, and more than three concurrent units. The waves output is a schedule **proposal**, not worker execution.
 
 ```bash
 python scripts/agent_work_graph.py validate /tmp/agent-plan.json
