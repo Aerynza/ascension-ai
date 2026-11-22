@@ -86,7 +86,10 @@ class ReleaseReadinessTests(unittest.TestCase):
                 self.assertFalse(any(evaluate_release_gates(MODEL, PROFILE).values()),
                                  "Shared-bearer runtime cannot self-certify even with a signed evidence report")
                 self.assertTrue(all(evaluate_release_gates(MODEL, PROFILE, signed_admission_active=True).values()))
-                self.assertFalse(any(evaluate_release_gates({"ready": False, "profile": "pro_v231"}, PROFILE, signed_admission_active=True).values()))
+                for ready in (False, "false", "true", 1, None):
+                    with self.subTest(ready=ready):
+                        gates = evaluate_release_gates({**MODEL, "ready": ready}, PROFILE, signed_admission_active=True)
+                        self.assertFalse(any(gates.values()))
                 self.assertFalse(any(evaluate_release_gates({"ready": True, "profile": "starter"}, PROFILE, signed_admission_active=True).values()))
                 os.environ["ASCENSION_VERIFY_MODEL_ON_BOOT"] = "0"
                 self.assertFalse(any(evaluate_release_gates(MODEL, PROFILE, signed_admission_active=True).values()))

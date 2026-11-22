@@ -31,7 +31,7 @@ def evaluate_release_gates(model: dict, profile: dict, *, signed_admission_activ
     # Only a tested, installed middleware integration may supply True here.
     if signed_admission_active is not True:
         return closed
-    if not model.get("ready") or model.get("profile") != "pro_v231":
+    if model.get("ready") is not True or model.get("profile") != "pro_v231":
         return closed
     if os.getenv("AERYNZA_NATIVE_REPLACEMENT_APPROVED") != "1":
         return closed
@@ -46,7 +46,8 @@ def evaluate_release_gates(model: dict, profile: dict, *, signed_admission_activ
         source = Path(path)
         if not source.is_file() or source.stat().st_size > MAX_REPORT_BYTES:
             return closed
-        raw = source.read_bytes()
+        with source.open("rb") as stream:
+            raw = stream.read(MAX_REPORT_BYTES + 1)
         if len(raw) > MAX_REPORT_BYTES or hashlib.sha256(raw).hexdigest() != expected:
             return closed
         report = json.loads(raw)
