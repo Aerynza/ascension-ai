@@ -281,7 +281,9 @@ def main() -> int:
     else:
         dataset = TokenizedDataset(token_ids, sequence_length)
         manifest["training_objective"] = "continuous_language_model_v1"
-    dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=0)
+    loader_generator = torch.Generator().manual_seed(42)
+    dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=0, generator=loader_generator)
+    recovery_config = {"batch_size": args.batch_size, "learning_rate": args.learning_rate, "device": device, "print_every": args.print_every, "torch_version": str(torch.__version__)}
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=0.01, betas=(0.9, 0.95))
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(args.steps, 1))
     criterion = nn.CrossEntropyLoss(ignore_index=-100)
@@ -292,7 +294,8 @@ def main() -> int:
     meta_path = checkpoint_dir / f"{args.version}_meta.json"
     status_path = checkpoint_dir / f"{args.version}_status.json"
     log_path = checkpoint_dir / f"{args.version}_train.log"
-    shutil.copy2(base_tokenizer_path, tokenizer_path)
+    if not args.resume_latest and any(p.exists() for p in (latest_path, model_path, tokenizer_path, meta_path, status_path, log_path)):
+        raise FileExistsError("output version already exists; use explicit recovery or a new version")
 
     start_step = 0
     total_loss = 0.0
@@ -316,6 +319,8 @@ def main() -> int:
             raise ValueError("recovery checkpoint continuation gate does not match this run")
         if recovery.get("corpus_manifest") != manifest:
             raise ValueError("recovery checkpoint corpus manifest does not match this run")
+        if recovery.get("recovery_config") != recovery_config or "rng_state" not in recovery:
+            raise ValueError("exact recovery evidence missing or configuration changed")
         model.load_state_dict(recovery["model_state_dict"], strict=True)
         optimizer.load_state_dict(recovery["optimizer_state_dict"])
         scheduler.load_state_dict(recovery["scheduler_state_dict"])
@@ -325,6 +330,7 @@ def main() -> int:
         windows = list(recovery.get("window_losses", []))
         window_loss = float(recovery.get("window_loss", 0.0))
 
+    shutil.copy2(base_tokenizer_path, tokenizer_path)
     log_file = log_path.open("a", encoding="utf-8", buffering=1)
 
     def log(message: str) -> None:
@@ -351,6 +357,19 @@ def main() -> int:
     model.train()
     step = start_step
     iterator = iter(dataloader)
+    if args.resume_latest:
+        # Replay only batch ordering, not model updates.
+        for _ in range(start_step):
+            try:
+                next(iterator)
+            except StopIteration:
+                iterator = iter(dataloader)
+                next(iterator)
+        rng = recovery["rng_state"]
+        random.setstate(rng["python"])
+        torch.set_rng_state(rng["torch"].cpu())
+        if device == "cuda":
+            torch.cuda.set_rng_state_all([state.cpu() for state in rng["cuda"]])
     while step < args.steps:
         try:
             batch = next(iterator)
@@ -401,6 +420,8 @@ def main() -> int:
             save_checkpoint(latest_path, {
                 "version": args.version,
                 "model_state_dict": model.state_dict(),
+                "recovery_config": recovery_config,
+                "rng_state": {"python": random.getstate(), "torch": torch.get_rng_state(), "cuda": torch.cuda.get_rng_state_all() if device == "cuda" else []},
                 "optimizer_state_dict": optimizer.state_dict(),
                 "scheduler_state_dict": scheduler.state_dict(),
                 "config": config,
