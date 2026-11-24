@@ -24,4 +24,4 @@ def build_command(repo, base_version, experiment_version, gate, steps, rate, *, 
             "--version", experiment_version, "--gate-result", str(gate),
             "--human-review-approved", "--steps", str(steps),
             "--learning-rate", str(rate), "--save-every", str(min(steps, 250)),
-            "--assistant-only-loss"]
+            "--general-replay-ratio", "0", "--assistant-only-loss"]
