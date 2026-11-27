@@ -31,5 +31,27 @@ class AdapterTests(unittest.TestCase):
                 self.assertEqual(result["decision"], expected)
                 self.assertEqual(result["execution_state"], "proposal_only")
 
+    def test_malformed_contracts(self):
+        task = TaskSnapshot("pending", 1, 0, 3, dependencies_complete=True)
+        action = "documents.prepare_draft"
+        ready = {"action": action, "can_dispatch_now": True,
+                 "guardian_required": False, "approval": "safe_internal_auto"}
+        malformed = [None, [], {}, {"proposed_actions": None},
+                     {"proposed_actions": "invalid"}, {"proposed_actions": [None]},
+                     {"proposed_actions": [ready, None]}]
+        for key, values in {
+            "approval": [None, [], "unknown", "explicit_confirmation"],
+            "guardian_required": [None, 0, "false"],
+            "can_dispatch_now": [None, 1, "true"],
+        }.items():
+            malformed.append({"proposed_actions": [{k: v for k, v in ready.items() if k != key}]})
+            malformed.extend({"proposed_actions": [dict(ready, **{key: value})]} for value in values)
+        for contract in malformed:
+            with self.subTest(contract=contract):
+                result = propose_recovery(task, authorized=True, expected_version=1,
+                    action=action, execution_contract=contract)
+                self.assertEqual(result["decision"], "blocked")
+                self.assertEqual(result["execution_state"], "proposal_only")
+
 if __name__ == "__main__":
     unittest.main()
