@@ -21,6 +21,11 @@ class RecoveryTests(unittest.TestCase):
             (replace(base, attempts=-1), True, 1, "blocked"),
             (replace(base, receipt_verified=True), True, 1, "reconcile"),
             (replace(base, max_attempts=0), True, 1, "blocked"),
+            (replace(base, status="unexpected"), True, 1, "blocked"),
+            (replace(base, status="unexpected", receipt_verified=True), True, 1, "blocked"),
+            (replace(base, status="failed", retryable=True, attempts=1, dependencies_complete=False), True, 1, "blocked"),
+            (replace(base, dependencies_complete=1), True, 1, "blocked"),
+            (replace(base, status="failed", retryable=1, attempts=1), True, 1, "blocked"),
         ]
         for snapshot, authorized, version, expected in cases:
             with self.subTest(snapshot=snapshot, authorized=authorized, version=version):
