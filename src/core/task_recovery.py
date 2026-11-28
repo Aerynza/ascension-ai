@@ -30,6 +30,8 @@ def recovery_decision(task: TaskSnapshot, *, authorized: bool,
         return "blocked"
     if task.max_attempts == 0 or task.attempts > task.max_attempts:
         return "blocked"
+    if task.status not in ("pending", "running", "unknown", "failed", "succeeded"):
+        return "blocked"
     if task.status == "succeeded":
         return "complete" if task.receipt_verified is True else "reconcile"
     if task.status == "unknown":
